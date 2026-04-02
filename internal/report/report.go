@@ -5,17 +5,25 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"image/draw"
 	_ "image/png"
-	"math"
 	"os"
+	"regexp"
+	"strconv"
+
+	"gonum.org/v1/plot"
+	"gonum.org/v1/plot/plotter"
+	"gonum.org/v1/plot/vg"
+	vgdraw "gonum.org/v1/plot/vg/draw"
+	"gonum.org/v1/plot/vg/vgimg"
 )
 
-const plotMargin = 40
+// intensityScale is the divisor applied to raw 16-bit pixel values when
+// extracting light curve data.
+const intensityScale = 4000
 
-// ExtractRow loads a 16-bit PNG and returns the intensity values from the
-// row at the vertical center plus offsetFromCenter.
-func ExtractRow(imagePath string, offsetFromCenter int) ([]uint16, error) {
+// ExtractRow loads a 16-bit PNG and returns the scaled intensity values from
+// the row at the vertical center plus offsetFromCenter.
+func ExtractRow(imagePath string, offsetFromCenter int) ([]float64, error) {
 	f, err := os.Open(imagePath)
 	if err != nil {
 		return nil, err
@@ -32,93 +40,98 @@ func ExtractRow(imagePath string, offsetFromCenter int) ([]uint16, error) {
 	if row < bounds.Min.Y || row >= bounds.Max.Y {
 		return nil, fmt.Errorf("row %d outside image bounds [%d, %d)", row, bounds.Min.Y, bounds.Max.Y)
 	}
-	values := make([]uint16, bounds.Dx())
+	values := make([]float64, bounds.Dx())
 	for x := bounds.Min.X; x < bounds.Max.X; x++ {
 		r, _, _, _ := src.At(x, row).RGBA()
-		values[x-bounds.Min.X] = uint16(r)
+		values[x-bounds.Min.X] = float64(r) / intensityScale
 	}
 	return values, nil
 }
 
-// PlotLightCurve renders a line plot of the given intensity values and
-// returns the resulting image. The plot has a white background with a
-// blue data line and simple axes. If edges is non-empty, full-height
-// red lines (3 pixels wide) are drawn at those data-index positions.
-func PlotLightCurve(values []uint16, width, height int, edges []int) *image.RGBA {
-	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	draw.Draw(img, img.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
-
-	if len(values) < 2 {
-		return img
+// ParsePixelScale extracts fundamental_plane_width_km and
+// fundamental_plane_width_num_points from a JSON5 parameters string
+// and returns the km-per-pixel scale factor.
+func ParsePixelScale(json5Text string) (float64, error) {
+	widthKm, err := extractFloat(json5Text, "fundamental_plane_width_km")
+	if err != nil {
+		return 0, err
 	}
+	numPoints, err := extractFloat(json5Text, "fundamental_plane_width_num_points")
+	if err != nil {
+		return 0, err
+	}
+	if numPoints == 0 {
+		return 0, fmt.Errorf("fundamental_plane_width_num_points is zero")
+	}
+	return widthKm / numPoints, nil
+}
 
-	// Determine Y-axis range.
-	minVal, maxVal := values[0], values[0]
-	for _, v := range values[1:] {
-		if v < minVal {
-			minVal = v
+// extractFloat finds a key in JSON5 text and returns its numeric value.
+func extractFloat(text, key string) (float64, error) {
+	re := regexp.MustCompile(key + `\s*:\s*([0-9.eE+-]+)`)
+	m := re.FindStringSubmatch(text)
+	if m == nil {
+		return 0, fmt.Errorf("%s not found in parameters", key)
+	}
+	return strconv.ParseFloat(m[1], 64)
+}
+
+// PlotLightCurve renders a line plot of the given intensity values using
+// gonum/plot with grid, axis labels, and tick marks. If edges is non-empty,
+// full-height red vertical lines are drawn at those data-index positions.
+// Returns the plot as an RGBA image.
+func PlotLightCurve(values []float64, width, height int, edges []int, yMax, kmPerPixel float64) *image.RGBA {
+	p := plot.New()
+	p.Title.Text = "Light Curve"
+	if kmPerPixel > 0 {
+		p.X.Label.Text = "Distance (km)"
+	} else {
+		p.X.Label.Text = "Pixel"
+		kmPerPixel = 1
+	}
+	p.Y.Label.Text = "Intensity"
+	p.Y.Min = -0.1
+	p.Y.Max = yMax
+	p.Add(plotter.NewGrid())
+
+	if len(values) >= 2 {
+		pts := make(plotter.XYs, len(values))
+		for i, v := range values {
+			pts[i].X = float64(i) * kmPerPixel
+			pts[i].Y = v
 		}
-		if v > maxVal {
-			maxVal = v
-		}
-	}
-	// Add 5% padding so the line doesn't touch the edges.
-	valRange := float64(maxVal - minVal)
-	if valRange == 0 {
-		valRange = 1
-	}
-	padded := valRange * 0.05
-	yMin := float64(minVal) - padded
-	yMax := float64(maxVal) + padded
+		line, _ := plotter.NewLine(pts)
+		line.Color = color.RGBA{B: 255, A: 255}
+		p.Add(line)
 
-	plotW := width - 2*plotMargin
-	plotH := height - 2*plotMargin
-
-	toX := func(i int) int {
-		return plotMargin + i*plotW/(len(values)-1)
-	}
-	toY := func(v uint16) int {
-		frac := (float64(v) - yMin) / (yMax - yMin)
-		return plotMargin + plotH - int(math.Round(frac*float64(plotH)))
-	}
-
-	// Draw axes.
-	black := color.RGBA{A: 255}
-	for x := plotMargin; x <= plotMargin+plotW; x++ {
-		img.Set(x, plotMargin+plotH, black)
-	}
-	for y := plotMargin; y <= plotMargin+plotH; y++ {
-		img.Set(plotMargin, y, black)
-	}
-
-	// Draw data line.
-	blue := color.RGBA{B: 255, A: 255}
-	prevX, prevY := toX(0), toY(values[0])
-	for i := 1; i < len(values); i++ {
-		cx, cy := toX(i), toY(values[i])
-		bresenham(img, prevX, prevY, cx, cy, blue)
-		prevX, prevY = cx, cy
-	}
-
-	// Draw edge markers as full-height red lines, 3 pixels wide.
-	red := color.RGBA{R: 255, A: 255}
-	for _, ei := range edges {
-		if ei < 0 || ei >= len(values) {
-			continue
-		}
-		cx := toX(ei)
-		for dx := -1; dx <= 1; dx++ {
-			px := cx + dx
-			if px < plotMargin || px > plotMargin+plotW {
+		// Draw edge markers as red vertical lines from 0 to Y max.
+		for _, ei := range edges {
+			if ei < 0 || ei >= len(values) {
 				continue
 			}
-			for y := plotMargin; y <= plotMargin+plotH; y++ {
-				img.Set(px, y, red)
-			}
+			edgeLine, _ := plotter.NewLine(plotter.XYs{
+				{X: float64(ei) * kmPerPixel, Y: 0},
+				{X: float64(ei) * kmPerPixel, Y: p.Y.Max},
+			})
+			edgeLine.Color = color.RGBA{R: 255, A: 255}
+			edgeLine.Width = vg.Points(1.5)
+			p.Add(edgeLine)
 		}
 	}
 
-	return img
+	// Render to an in-memory image.
+	c := vgimg.New(vg.Length(width), vg.Length(height))
+	p.Draw(vgdraw.New(c))
+
+	src := c.Image()
+	bounds := src.Bounds()
+	dst := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			dst.Set(x, y, src.At(x, y))
+		}
+	}
+	return dst
 }
 
 // FindEdges traverses the observation-path row of geometricShadow.png and
@@ -169,39 +182,3 @@ func FindEdges(imagePath string, offsetFromCenter int) ([]int, error) {
 	return edges, nil
 }
 
-// bresenham draws a line between two points using Bresenham's algorithm.
-func bresenham(img *image.RGBA, x0, y0, x1, y1 int, c color.Color) {
-	dx := x1 - x0
-	if dx < 0 {
-		dx = -dx
-	}
-	dy := y1 - y0
-	if dy < 0 {
-		dy = -dy
-	}
-	dy = -dy
-
-	sx, sy := 1, 1
-	if x0 > x1 {
-		sx = -1
-	}
-	if y0 > y1 {
-		sy = -1
-	}
-	err := dx + dy
-	for {
-		img.Set(x0, y0, c)
-		if x0 == x1 && y0 == y1 {
-			break
-		}
-		e2 := 2 * err
-		if e2 >= dy {
-			err += dy
-			x0 += sx
-		}
-		if e2 <= dx {
-			err += dx
-			y0 += sy
-		}
-	}
-}

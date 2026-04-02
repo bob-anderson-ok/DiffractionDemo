@@ -35,6 +35,7 @@ const (
 
 	defaultWidth  float64 = 1200
 	defaultHeight float64 = 800
+	defaultYMax   float64 = 1.5
 	defaultHSplit float64 = 0.4
 	defaultVSplit float64 = 0.55
 )
@@ -72,9 +73,16 @@ func Run() {
 	var sourceDir string
 	var paramsFilePath string
 	var diffImagePath string
+	var paramsDirty bool
+	var yMaxEntry *focusLostEntry
+
+	paramsEntry.OnChanged = func(_ string) {
+		paramsDirty = true
+	}
 
 	saveFileBtn := widget.NewButton("Save", func() {
 		saveParameters(w, paramsEntry, paramsFilePath)
+		paramsDirty = false
 	})
 	saveFileBtn.Disable()
 
@@ -84,7 +92,7 @@ func Run() {
 	saveAsBtn.Disable()
 
 	openBtn := widget.NewButton("Open Parameters File", func() {
-		openParametersFile(w, paramsEntry, &sourceDir, &paramsFilePath, saveFileBtn, saveAsBtn)
+		openParametersFile(w, paramsEntry, &sourceDir, &paramsFilePath, saveFileBtn, saveAsBtn, &paramsDirty)
 	})
 
 	pathOffsetEntry := newFocusLostEntry()
@@ -98,33 +106,66 @@ func Run() {
 			pathOffsetEntry.SetText(text[:len(text)-1])
 		}
 	}
+	// kmPerPixel returns the pixel-to-km scale from the current parameters,
+	// or 0 if the parameters cannot be parsed.
+	kmPerPixel := func() float64 {
+		scale, _ := report.ParsePixelScale(paramsEntry.Text)
+		return scale
+	}
+
 	pathOffsetEntry.OnFocusLost = func() {
 		if diffImagePath != "" {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
-			drawPathLine(imagePanel, diffImagePath, offset)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset)
-			printEdges(appDir, offset)
+			edges := findEdgesForOffset(appDir, offset)
+			drawPathLine(imagePanel, diffImagePath, offset, edges)
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel())
+		}
+	}
+
+	yMaxEntry = newFocusLostEntry()
+	yMaxEntry.SetText(strconv.FormatFloat(defaultYMax, 'f', -1, 64))
+	yMaxEntry.OnChanged = func(text string) {
+		if text == "" || text == "-" || text == "." || text == "-." {
+			return
+		}
+		if _, err := strconv.ParseFloat(text, 64); err != nil {
+			yMaxEntry.SetText(text[:len(text)-1])
+		}
+	}
+	yMaxEntry.OnFocusLost = func() {
+		if diffImagePath != "" {
+			offset := parsePathOffset(pathOffsetEntry.Text)
+			appDir := filepath.Dir(diffImagePath)
+			edges := findEdgesForOffset(appDir, offset)
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel())
 		}
 	}
 
 	statusLabel := widget.NewLabel("")
 	runBtn := widget.NewButton("Run Diffraction", nil)
 	runBtn.OnTapped = func() {
+		if paramsDirty && paramsFilePath != "" {
+			saveParameters(w, paramsEntry, paramsFilePath)
+			paramsDirty = false
+		}
 		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, func() {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
-			drawPathLine(imagePanel, diffImagePath, offset)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset)
-			printEdges(appDir, offset)
+			edges := findEdgesForOffset(appDir, offset)
+			drawPathLine(imagePanel, diffImagePath, offset, edges)
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel())
 		})
 	}
 	pathOffsetLabel := widget.NewLabel("Path offset from center (rows):")
 	entryMinSize := pathOffsetEntry.MinSize()
 	pathOffsetBox := container.NewHBox(pathOffsetLabel,
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), pathOffsetEntry))
+	yMaxLabel := widget.NewLabel("Y max:")
+	yMaxBox := container.NewHBox(yMaxLabel,
+		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), yMaxEntry))
 
-	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, pathOffsetBox, statusLabel)
+	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, pathOffsetBox, yMaxBox, statusLabel)
 	hSplit := container.NewHSplit(paramsScroll, imagePanel)
 	vSplit := container.NewVSplit(hSplit, lightCurvePanel)
 
@@ -159,7 +200,7 @@ func buildImagePanel(placeholder string) *fyne.Container {
 // openParametersFile shows a file-open dialog filtered to .json and .json5
 // files, loads the selected file contents into the entry widget, records the
 // source directory, and enables the Save As button.
-func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, paramsFilePath *string, saveFileBtn, saveAsBtn *widget.Button) {
+func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, paramsFilePath *string, saveFileBtn, saveAsBtn *widget.Button, dirty *bool) {
 	fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 		if err != nil {
 			dialog.ShowError(err, w)
@@ -182,6 +223,7 @@ func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, p
 			return
 		}
 		entry.SetText(string(data))
+		*dirty = false
 		saveFileBtn.Enable()
 		saveAsBtn.Enable()
 		w.SetTitle("DiffractionDemo — " + filePath)
@@ -270,7 +312,7 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 			*diffImagePath = filepath.Join(appDir, "diffractionImage8bit.png")
 			displayImage(imagePanel, *diffImagePath)
 			onImageReady()
-			showResultsWindow(w, appDir)
+			// showResultsWindow(w, appDir)
 		})
 	}()
 }
@@ -286,9 +328,9 @@ func displayImage(panel *fyne.Container, path string) {
 }
 
 // drawPathLine loads the image at imagePath, draws a 4-pixel wide red
-// horizontal line at the vertical center plus offset rows, and displays the
-// result in the given panel.
-func drawPathLine(panel *fyne.Container, imagePath string, offset int) {
+// horizontal line at the vertical center plus offset rows, draws green
+// vertical lines at edge positions, and displays the result in the panel.
+func drawPathLine(panel *fyne.Container, imagePath string, offset int, edges []int) {
 	f, err := os.Open(imagePath)
 	if err != nil {
 		return
@@ -303,6 +345,7 @@ func drawPathLine(panel *fyne.Container, imagePath string, offset int) {
 	dst := image.NewRGBA(bounds)
 	draw.Draw(dst, bounds, src, bounds.Min, draw.Src)
 
+	// Draw observation path as a 4-pixel red horizontal line.
 	lineY := bounds.Min.Y + bounds.Dy()/2 + offset
 	red := color.RGBA{R: 255, A: 255}
 	for dy := 0; dy < 4; dy++ {
@@ -312,6 +355,20 @@ func drawPathLine(panel *fyne.Container, imagePath string, offset int) {
 		}
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
 			dst.Set(x, y, red)
+		}
+	}
+
+	// Draw edge positions as full-height green vertical lines, 3 pixels wide.
+	green := color.RGBA{G: 255, A: 255}
+	for _, ex := range edges {
+		for dx := -1; dx <= 1; dx++ {
+			px := ex + dx
+			if px < bounds.Min.X || px >= bounds.Max.X {
+				continue
+			}
+			for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+				dst.Set(px, y, green)
+			}
 		}
 	}
 
@@ -329,19 +386,35 @@ func parsePathOffset(text string) int {
 	return n
 }
 
+// parseYMax parses the Y max entry text as a float, returning the
+// default value for empty or invalid input.
+func parseYMax(text string) float64 {
+	v, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		return defaultYMax
+	}
+	return v
+}
+
+// findEdgesForOffset returns the geometric shadow edge positions for the
+// given path offset, or nil if the shadow image cannot be read.
+func findEdgesForOffset(appDir string, offset int) []int {
+	shadowPath := filepath.Join(appDir, "geometricShadow.png")
+	edges, _ := report.FindEdges(shadowPath, offset)
+	return edges
+}
+
 // plotRowLightCurve extracts intensity values from the center+offset row of
-// targetImage16bit.png, finds geometric shadow edges, and plots both as a
+// targetImage16bit.png and plots them with the provided edge markers as a
 // light curve in the given panel.
-func plotRowLightCurve(w fyne.Window, panel *fyne.Container, appDir string, offset int) {
+func plotRowLightCurve(w fyne.Window, panel *fyne.Container, appDir string, offset int, edges []int, yMax, kmPerPixel float64) {
 	targetPath := filepath.Join(appDir, "targetImage16bit.png")
 	values, err := report.ExtractRow(targetPath, offset)
 	if err != nil {
 		dialog.ShowError(fmt.Errorf("cannot extract light curve: %w", err), w)
 		return
 	}
-	shadowPath := filepath.Join(appDir, "geometricShadow.png")
-	edges, _ := report.FindEdges(shadowPath, offset)
-	plotImg := report.PlotLightCurve(values, 1200, 400, edges)
+	plotImg := report.PlotLightCurve(values, 1200, 400, edges, yMax, kmPerPixel)
 	img := canvas.NewImageFromImage(plotImg)
 	img.FillMode = canvas.ImageFillContain
 	panel.Layout = layout.NewStackLayout()
@@ -349,17 +422,6 @@ func plotRowLightCurve(w fyne.Window, panel *fyne.Container, appDir string, offs
 	panel.Refresh()
 }
 
-// printEdges finds geometric shadow edges along the observation path row
-// and prints them to the terminal.
-func printEdges(appDir string, offset int) {
-	shadowPath := filepath.Join(appDir, "geometricShadow.png")
-	edges, err := report.FindEdges(shadowPath, offset)
-	if err != nil {
-		fmt.Printf("FindEdges error: %v\n", err)
-		return
-	}
-	fmt.Printf("Geometric shadow edges at offset %d: %v\n", offset, edges)
-}
 
 // showResultsWindow opens a new window displaying lightCurvePlot.png and
 // diffractionImageWithPath.png side by side, with the plot scaled to match

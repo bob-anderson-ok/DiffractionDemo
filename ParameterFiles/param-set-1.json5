@@ -13,7 +13,7 @@
   // If both are present, parallax_arcsec is used.
   // At least one must be present.
 
-  parallax_arcsec : 3.7711,
+  // parallax_arcsec : 3.7711,
   distance_au : 2.33,
 
   // If you want an integrated (white light) ground shadow image, supply a path to a QE table file.
@@ -44,7 +44,7 @@
   // The path_perpendicular_offset_from_center_km parameter is interpreted such that
   // positive values shift the observation path to the right of someone facing forward on the star path.
 
-  percent_mag_drop : 75,  // Optional. If omitted, 100 will be used
+  percent_mag_drop : 100,  // Optional. If omitted, 100 will be used
 
   // star_diam_on_plane_mas: 2.15,  // Optional. If omitted, 0.0 is used (i.e., no finite star calculation)
 
