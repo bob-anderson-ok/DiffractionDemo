@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -77,6 +78,7 @@ func Run() {
 	var paramsDirty bool
 	var yMaxEntry *focusLostEntry
 	var exposureEntry *focusLostEntry
+	var diffCmd *exec.Cmd
 
 	paramsEntry.OnChanged = func(_ string) {
 		paramsDirty = true
@@ -93,8 +95,10 @@ func Run() {
 	})
 	saveAsBtn.Disable()
 
+	runBtn := widget.NewButton("Run Diffraction", nil)
+
 	openBtn := widget.NewButton("Open Parameters File", func() {
-		openParametersFile(w, paramsEntry, &sourceDir, &paramsFilePath, saveFileBtn, saveAsBtn, &paramsDirty)
+		openParametersFile(w, paramsEntry, &sourceDir, &paramsFilePath, saveFileBtn, saveAsBtn, runBtn, &paramsDirty)
 	})
 
 	pathOffsetEntry := newFocusLostEntry()
@@ -152,13 +156,12 @@ func Run() {
 	showPlotsCheck := widget.NewCheck("Show IOTAdiffraction plots", nil)
 
 	statusLabel := widget.NewLabel("")
-	runBtn := widget.NewButton("Run Diffraction", nil)
 	runBtn.OnTapped = func() {
 		if paramsDirty && paramsFilePath != "" {
 			saveParameters(w, paramsEntry, paramsFilePath)
 			paramsDirty = false
 		}
-		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, showPlotsCheck.Checked, func() {
+		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, showPlotsCheck.Checked, &diffCmd, func() {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
 			edges := findEdgesForOffset(appDir, offset)
@@ -185,7 +188,6 @@ func Run() {
 		}
 	}
 	exposureEntry.OnFocusLost = func() {
-		printExposurePixels(paramsEntry.Text, exposureEntry.Text, kmPerPixel())
 		if diffImagePath != "" {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
@@ -206,6 +208,9 @@ func Run() {
 	w.SetContent(container.NewBorder(toolbar, nil, nil, nil, vSplit))
 	w.SetOnClosed(func() {
 		savePreferences(a.Preferences(), w, hSplit, vSplit)
+		if diffCmd != nil && diffCmd.Process != nil {
+			diffCmd.Process.Kill()
+		}
 	})
 
 	w.ShowAndRun()
@@ -232,7 +237,7 @@ func buildImagePanel(placeholder string) *fyne.Container {
 // openParametersFile shows a file-open dialog filtered to .json and .json5
 // files, loads the selected file contents into the entry widget, records the
 // source directory, and enables the Save As button.
-func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, paramsFilePath *string, saveFileBtn, saveAsBtn *widget.Button, dirty *bool) {
+func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, paramsFilePath *string, saveFileBtn, saveAsBtn, runBtn *widget.Button, dirty *bool) {
 	fd := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 		if err != nil {
 			dialog.ShowError(err, w)
@@ -261,11 +266,13 @@ func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, p
 		// Check if the file is writable.
 		if f, err := os.OpenFile(filePath, os.O_WRONLY, 0); err != nil {
 			saveFileBtn.Disable()
+			runBtn.Disable()
 			dialog.ShowInformation("Read-Only File",
-				"This file is read-only, so the Save button has been disabled.\nUse Save As to create an editable copy.", w)
+				"This file is read-only, so the Save and Run Diffraction buttons have been disabled.\nUse Save As to create an editable copy.", w)
 		} else {
 			f.Close()
 			saveFileBtn.Enable()
+			runBtn.Enable()
 		}
 
 		w.SetTitle("DiffractionDemo — " + filePath)
@@ -317,7 +324,7 @@ func saveParametersAs(w fyne.Window, entry *widget.Entry, sourceDir string) {
 // in a background goroutine. The button is disabled while running. On success,
 // diffractionImage8bit.png is displayed in the provided image panel with a
 // path-offset line drawn via the onImageReady callback.
-func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, paramsFile string, imagePanel *fyne.Container, diffImagePath *string, showPlots bool, onImageReady func()) {
+func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, paramsFile string, imagePanel *fyne.Container, diffImagePath *string, showPlots bool, diffCmd **exec.Cmd, onImageReady func()) {
 	if paramsFile == "" {
 		dialog.ShowError(fmt.Errorf("no parameters file has been opened"), w)
 		return
@@ -339,8 +346,16 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 	status.SetText("Running IOTAdiffraction...")
 
 	progress := widget.NewProgressBarInfinite()
-	d := dialog.NewCustomWithoutButtons("Running IOTAdiffraction...", progress, w)
-	d.Show()
+	dlg := dialog.NewCustomWithoutButtons("Running IOTAdiffraction...", progress, w)
+	dlg.Show()
+
+	// Record the current mod time of the output image so we can detect when
+	// IOTAdiffraction has written a new one.
+	outputPath := filepath.Join(appDir, "diffractionImage8bit.png")
+	var prevModTime time.Time
+	if info, err := os.Stat(outputPath); err == nil {
+		prevModTime = info.ModTime()
+	}
 
 	go func() {
 		plotsArg := "False"
@@ -349,23 +364,59 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 		}
 		cmd := exec.Command(diffExe, paramsFile, plotsArg)
 		cmd.Dir = appDir
-		output, err := cmd.CombinedOutput()
-		fyne.Do(func() {
-			d.Hide()
-			progress.Stop()
-			if err != nil {
+		*diffCmd = cmd
+		if err := cmd.Start(); err != nil {
+			*diffCmd = nil
+			fyne.Do(func() {
+				dlg.Hide()
+				progress.Stop()
 				btn.Enable()
 				status.SetText("Failed")
-				dialog.ShowError(fmt.Errorf("IOTAdiffraction failed: %w\n%s", err, string(output)), w)
-				return
+				dialog.ShowError(fmt.Errorf("IOTAdiffraction failed to start: %w", err), w)
+			})
+			return
+		}
+
+		// Poll until the output image is written (mod time changes) or
+		// the process exits, whichever comes first.
+		outputReady := false
+		for !outputReady {
+			time.Sleep(500 * time.Millisecond)
+			if info, err := os.Stat(outputPath); err == nil && info.ModTime().After(prevModTime) {
+				outputReady = true
 			}
+			// Also stop polling if the process has already exited.
+			if cmd.ProcessState != nil {
+				break
+			}
+		}
+
+		// Check for early process exit with error (no output produced).
+		if !outputReady {
+			waitErr := cmd.Wait()
+			fyne.Do(func() {
+				dlg.Hide()
+				progress.Stop()
+				btn.Enable()
+				status.SetText("Failed")
+				dialog.ShowError(fmt.Errorf("IOTAdiffraction failed: %w", waitErr), w)
+			})
+			return
+		}
+
+		fyne.Do(func() {
+			dlg.Hide()
+			progress.Stop()
 			btn.Enable()
 			status.SetText("Completed")
-			*diffImagePath = filepath.Join(appDir, "diffractionImage8bit.png")
+			*diffImagePath = outputPath
 			displayImage(imagePanel, *diffImagePath)
 			onImageReady()
-			// showResultsWindow(w, appDir)
 		})
+
+		// Let the process finish in the background (plot windows still open).
+		cmd.Wait()
+		*diffCmd = nil
 	}()
 }
 
@@ -448,25 +499,6 @@ func parseYMax(text string) float64 {
 	return v
 }
 
-// printExposurePixels computes and prints how many pixels the given exposure
-// time spans, based on the shadow speed and pixel scale from the parameters.
-func printExposurePixels(paramsText, exposureText string, kmPerPx float64) {
-	exposure, err := strconv.ParseFloat(exposureText, 64)
-	if err != nil || exposure == 0 {
-		return
-	}
-	speed, err := report.ParseShadowSpeed(paramsText)
-	if err != nil {
-		fmt.Printf("Cannot compute shadow speed: %v\n", err)
-		return
-	}
-	if kmPerPx == 0 {
-		fmt.Println("Cannot compute exposure pixels: pixel scale is zero")
-		return
-	}
-	pixels := exposure * speed / kmPerPx
-	fmt.Printf("Exposure %.4f s at shadow speed %.4f km/s = %.2f pixels\n", exposure, speed, pixels)
-}
 
 // calcExposurePixels returns the camera exposure time rounded to the nearest
 // integer number of pixels, or 0 if the exposure is zero or parameters are
