@@ -330,7 +330,8 @@ func parsePathOffset(text string) int {
 }
 
 // plotRowLightCurve extracts intensity values from the center+offset row of
-// targetImage16bit.png and plots them as a light curve in the given panel.
+// targetImage16bit.png, finds geometric shadow edges, and plots both as a
+// light curve in the given panel.
 func plotRowLightCurve(w fyne.Window, panel *fyne.Container, appDir string, offset int) {
 	targetPath := filepath.Join(appDir, "targetImage16bit.png")
 	values, err := report.ExtractRow(targetPath, offset)
@@ -338,7 +339,9 @@ func plotRowLightCurve(w fyne.Window, panel *fyne.Container, appDir string, offs
 		dialog.ShowError(fmt.Errorf("cannot extract light curve: %w", err), w)
 		return
 	}
-	plotImg := report.PlotLightCurve(values, 1200, 400)
+	shadowPath := filepath.Join(appDir, "geometricShadow.png")
+	edges, _ := report.FindEdges(shadowPath, offset)
+	plotImg := report.PlotLightCurve(values, 1200, 400, edges)
 	img := canvas.NewImageFromImage(plotImg)
 	img.FillMode = canvas.ImageFillContain
 	panel.Layout = layout.NewStackLayout()

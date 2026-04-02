@@ -42,8 +42,9 @@ func ExtractRow(imagePath string, offsetFromCenter int) ([]uint16, error) {
 
 // PlotLightCurve renders a line plot of the given intensity values and
 // returns the resulting image. The plot has a white background with a
-// blue data line and simple axes.
-func PlotLightCurve(values []uint16, width, height int) *image.RGBA {
+// blue data line and simple axes. If edges is non-empty, full-height
+// red lines (3 pixels wide) are drawn at those data-index positions.
+func PlotLightCurve(values []uint16, width, height int, edges []int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(img, img.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 
@@ -97,6 +98,24 @@ func PlotLightCurve(values []uint16, width, height int) *image.RGBA {
 		cx, cy := toX(i), toY(values[i])
 		bresenham(img, prevX, prevY, cx, cy, blue)
 		prevX, prevY = cx, cy
+	}
+
+	// Draw edge markers as full-height red lines, 3 pixels wide.
+	red := color.RGBA{R: 255, A: 255}
+	for _, ei := range edges {
+		if ei < 0 || ei >= len(values) {
+			continue
+		}
+		cx := toX(ei)
+		for dx := -1; dx <= 1; dx++ {
+			px := cx + dx
+			if px < plotMargin || px > plotMargin+plotW {
+				continue
+			}
+			for y := plotMargin; y <= plotMargin+plotH; y++ {
+				img.Set(px, y, red)
+			}
+		}
 	}
 
 	return img
