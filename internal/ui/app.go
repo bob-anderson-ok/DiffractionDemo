@@ -16,6 +16,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/widget"
 )
@@ -63,7 +64,7 @@ func Run() {
 	statusLabel := widget.NewLabel("")
 	runBtn := widget.NewButton("Run Diffraction", nil)
 	runBtn.OnTapped = func() {
-		runDiffraction(w, runBtn, statusLabel, paramsFilePath)
+		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel)
 	}
 
 	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, statusLabel)
@@ -172,8 +173,9 @@ func saveParametersAs(w fyne.Window, entry *widget.Entry, sourceDir string) {
 }
 
 // runDiffraction launches IOTAdiffraction.exe from the application directory
-// in a background goroutine. The button is disabled while running.
-func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, paramsFile string) {
+// in a background goroutine. The button is disabled while running. On success,
+// diffractionImage8bit.png is displayed in the provided image panel.
+func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, paramsFile string, imagePanel *fyne.Container) {
 	if paramsFile == "" {
 		dialog.ShowError(fmt.Errorf("no parameters file has been opened"), w)
 		return
@@ -207,9 +209,20 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 			}
 			btn.Enable()
 			status.SetText("Completed")
+			displayImage(imagePanel, filepath.Join(appDir, "diffractionImage8bit.png"))
 			showResultsWindow(w, appDir)
 		})
 	}()
+}
+
+// displayImage replaces the contents of a panel container with the image at
+// the given path, scaled to fill the available space.
+func displayImage(panel *fyne.Container, path string) {
+	img := canvas.NewImageFromFile(path)
+	img.FillMode = canvas.ImageFillContain
+	panel.Layout = layout.NewStackLayout()
+	panel.Objects = []fyne.CanvasObject{img}
+	panel.Refresh()
 }
 
 // showResultsWindow opens a new window displaying lightCurvePlot.png and
