@@ -149,6 +149,8 @@ func Run() {
 		}
 	}
 
+	showPlotsCheck := widget.NewCheck("Show IOTAdiffraction plots", nil)
+
 	statusLabel := widget.NewLabel("")
 	runBtn := widget.NewButton("Run Diffraction", nil)
 	runBtn.OnTapped = func() {
@@ -156,7 +158,7 @@ func Run() {
 			saveParameters(w, paramsEntry, paramsFilePath)
 			paramsDirty = false
 		}
-		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, func() {
+		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, showPlotsCheck.Checked, func() {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
 			edges := findEdgesForOffset(appDir, offset)
@@ -195,7 +197,7 @@ func Run() {
 	exposureBox := container.NewHBox(exposureLabel,
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), exposureEntry))
 
-	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, pathOffsetBox, yMaxBox, exposureBox, statusLabel)
+	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, pathOffsetBox, yMaxBox, exposureBox, showPlotsCheck, statusLabel)
 	hSplit := container.NewHSplit(paramsScroll, imagePanel)
 	vSplit := container.NewVSplit(hSplit, lightCurvePanel)
 
@@ -254,8 +256,18 @@ func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, p
 		}
 		entry.SetText(string(data))
 		*dirty = false
-		saveFileBtn.Enable()
 		saveAsBtn.Enable()
+
+		// Check if the file is writable.
+		if f, err := os.OpenFile(filePath, os.O_WRONLY, 0); err != nil {
+			saveFileBtn.Disable()
+			dialog.ShowInformation("Read-Only File",
+				"This file is read-only, so the Save button has been disabled.\nUse Save As to create an editable copy.", w)
+		} else {
+			f.Close()
+			saveFileBtn.Enable()
+		}
+
 		w.SetTitle("DiffractionDemo — " + filePath)
 	}, w)
 	fd.SetFilter(storage.NewExtensionFileFilter([]string{".json", ".json5"}))
@@ -305,7 +317,7 @@ func saveParametersAs(w fyne.Window, entry *widget.Entry, sourceDir string) {
 // in a background goroutine. The button is disabled while running. On success,
 // diffractionImage8bit.png is displayed in the provided image panel with a
 // path-offset line drawn via the onImageReady callback.
-func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, paramsFile string, imagePanel *fyne.Container, diffImagePath *string, onImageReady func()) {
+func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, paramsFile string, imagePanel *fyne.Container, diffImagePath *string, showPlots bool, onImageReady func()) {
 	if paramsFile == "" {
 		dialog.ShowError(fmt.Errorf("no parameters file has been opened"), w)
 		return
@@ -331,7 +343,11 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 	d.Show()
 
 	go func() {
-		cmd := exec.Command(diffExe, paramsFile, "False")
+		plotsArg := "False"
+		if showPlots {
+			plotsArg = "True"
+		}
+		cmd := exec.Command(diffExe, paramsFile, plotsArg)
 		cmd.Dir = appDir
 		output, err := cmd.CombinedOutput()
 		fyne.Do(func() {

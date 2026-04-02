@@ -1,7 +1,7 @@
 {
   // Set window_size to 0 to suppress display of ground shadow (and possibly other plots as well)
 
-  window_size_pixels : 800,   // Optional but if omitted, a default size will be used so plots will be produced.
+  window_size_pixels : 600,   // Optional but if omitted, a default size will be used so plots will be produced.
 
   // The title of the ground shadow display image.
   title : "(9203) Myrtus 2025 Feb 22",        // Optional
