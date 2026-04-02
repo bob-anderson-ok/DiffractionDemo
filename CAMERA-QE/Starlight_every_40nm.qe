@@ -1,0 +1,37 @@
+ // The sensor for this table is Sony ICX829AL  (monochrome)
+ // It's used in the Starlight Xpress Lodestar camera
+
+ // Format of the table is (an array of arrays) of the form:
+ // [
+ //   [wavelength_nm,  qe_percent],
+ //   [wavelength_nm,  qe_percent],
+ //   [wavelength_nm,  qe_percent],
+ //   ...
+ //   [wavelength_nm,  qe_percent],
+ // ]
+
+ // Note that wavelengths must be in ascending order.
+ // qe_percent is just used as a weighting factor, and wavelength weights will ultimately be
+ // normalized so that the sum of the weights is 1.0. As a result, QE percentage is not the
+ // mandatory units to use: if you have other values that can be used to weight each
+ // wavelength contribution, go ahead.
+
+ [
+    [      300.0,      25   ],
+    [      340.0,      38   ],
+    [      380.0,      52   ],
+    [      420.0,      66   ],
+    [      460.0,      79   ],
+    [      500.0,      93   ],
+    [      540.0,      99   ],
+    [      580.0,     100   ],
+    [      620.0,      99   ],
+    [      660.0,      93   ],
+    [      700.0,      87   ],
+    [      740.0,      76   ],
+    [      780.0,      61   ],
+    [      820.0,      50   ],
+    [      860.0,      38   ],
+    [      900.0,      26   ],
+    [      940.0,      17   ],
+  ]
