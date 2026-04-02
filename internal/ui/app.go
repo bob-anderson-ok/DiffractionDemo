@@ -2,6 +2,7 @@
 package ui
 
 import (
+	"DiffractionDemo/internal/report"
 	"fmt"
 	"image"
 	"image/color"
@@ -99,7 +100,9 @@ func Run() {
 	}
 	pathOffsetEntry.OnFocusLost = func() {
 		if diffImagePath != "" {
-			drawPathLine(imagePanel, diffImagePath, parsePathOffset(pathOffsetEntry.Text))
+			offset := parsePathOffset(pathOffsetEntry.Text)
+			drawPathLine(imagePanel, diffImagePath, offset)
+			plotRowLightCurve(w, lightCurvePanel, filepath.Dir(diffImagePath), offset)
 		}
 	}
 
@@ -107,7 +110,9 @@ func Run() {
 	runBtn := widget.NewButton("Run Diffraction", nil)
 	runBtn.OnTapped = func() {
 		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, func() {
-			drawPathLine(imagePanel, diffImagePath, parsePathOffset(pathOffsetEntry.Text))
+			offset := parsePathOffset(pathOffsetEntry.Text)
+			drawPathLine(imagePanel, diffImagePath, offset)
+			plotRowLightCurve(w, lightCurvePanel, filepath.Dir(diffImagePath), offset)
 		})
 	}
 	pathOffsetLabel := widget.NewLabel("Path offset from center (rows):")
@@ -318,6 +323,23 @@ func drawPathLine(panel *fyne.Container, imagePath string, offset int) {
 func parsePathOffset(text string) int {
 	n, _ := strconv.Atoi(text)
 	return n
+}
+
+// plotRowLightCurve extracts intensity values from the center+offset row of
+// targetImage16bit.png and plots them as a light curve in the given panel.
+func plotRowLightCurve(w fyne.Window, panel *fyne.Container, appDir string, offset int) {
+	targetPath := filepath.Join(appDir, "targetImage16bit.png")
+	values, err := report.ExtractRow(targetPath, offset)
+	if err != nil {
+		dialog.ShowError(fmt.Errorf("cannot extract light curve: %w", err), w)
+		return
+	}
+	plotImg := report.PlotLightCurve(values, 1200, 400)
+	img := canvas.NewImageFromImage(plotImg)
+	img.FillMode = canvas.ImageFillContain
+	panel.Layout = layout.NewStackLayout()
+	panel.Objects = []fyne.CanvasObject{img}
+	panel.Refresh()
 }
 
 // showResultsWindow opens a new window displaying lightCurvePlot.png and
