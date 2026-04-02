@@ -4,11 +4,14 @@ package ui
 import (
 	"fmt"
 	"image"
+	"image/color"
+	"image/draw"
 	_ "image/png"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -35,6 +38,27 @@ const (
 	defaultVSplit float64 = 0.55
 )
 
+// focusLostEntry extends widget.Entry to call a callback when focus is lost.
+type focusLostEntry struct {
+	widget.Entry
+	OnFocusLost func()
+}
+
+// newFocusLostEntry creates a focusLostEntry and registers it as an extended widget.
+func newFocusLostEntry() *focusLostEntry {
+	e := &focusLostEntry{}
+	e.ExtendBaseWidget(e)
+	return e
+}
+
+// FocusLost is called by Fyne when the entry loses keyboard focus.
+func (e *focusLostEntry) FocusLost() {
+	e.Entry.FocusLost()
+	if e.OnFocusLost != nil {
+		e.OnFocusLost()
+	}
+}
+
 // Run creates the application window and enters the Fyne event loop.
 func Run() {
 	a := app.NewWithID(appID)
@@ -46,6 +70,7 @@ func Run() {
 
 	var sourceDir string
 	var paramsFilePath string
+	var diffImagePath string
 
 	saveFileBtn := widget.NewButton("Save", func() {
 		saveParameters(w, paramsEntry, paramsFilePath)
@@ -61,13 +86,36 @@ func Run() {
 		openParametersFile(w, paramsEntry, &sourceDir, &paramsFilePath, saveFileBtn, saveAsBtn)
 	})
 
+	pathOffsetEntry := newFocusLostEntry()
+	pathOffsetEntry.SetPlaceHolder("0")
+	pathOffsetEntry.OnChanged = func(text string) {
+		if text == "" || text == "-" {
+			return
+		}
+		if _, err := strconv.Atoi(text); err != nil {
+			// Strip the last character that made it invalid.
+			pathOffsetEntry.SetText(text[:len(text)-1])
+		}
+	}
+	pathOffsetEntry.OnFocusLost = func() {
+		if diffImagePath != "" {
+			drawPathLine(imagePanel, diffImagePath, parsePathOffset(pathOffsetEntry.Text))
+		}
+	}
+
 	statusLabel := widget.NewLabel("")
 	runBtn := widget.NewButton("Run Diffraction", nil)
 	runBtn.OnTapped = func() {
-		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel)
+		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, func() {
+			drawPathLine(imagePanel, diffImagePath, parsePathOffset(pathOffsetEntry.Text))
+		})
 	}
+	pathOffsetLabel := widget.NewLabel("Path offset from center (rows):")
+	entryMinSize := pathOffsetEntry.MinSize()
+	pathOffsetBox := container.NewHBox(pathOffsetLabel,
+		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), pathOffsetEntry))
 
-	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, statusLabel)
+	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, pathOffsetBox, statusLabel)
 	hSplit := container.NewHSplit(paramsScroll, imagePanel)
 	vSplit := container.NewVSplit(hSplit, lightCurvePanel)
 
@@ -174,8 +222,9 @@ func saveParametersAs(w fyne.Window, entry *widget.Entry, sourceDir string) {
 
 // runDiffraction launches IOTAdiffraction.exe from the application directory
 // in a background goroutine. The button is disabled while running. On success,
-// diffractionImage8bit.png is displayed in the provided image panel.
-func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, paramsFile string, imagePanel *fyne.Container) {
+// diffractionImage8bit.png is displayed in the provided image panel with a
+// path-offset line drawn via the onImageReady callback.
+func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, paramsFile string, imagePanel *fyne.Container, diffImagePath *string, onImageReady func()) {
 	if paramsFile == "" {
 		dialog.ShowError(fmt.Errorf("no parameters file has been opened"), w)
 		return
@@ -209,7 +258,9 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 			}
 			btn.Enable()
 			status.SetText("Completed")
-			displayImage(imagePanel, filepath.Join(appDir, "diffractionImage8bit.png"))
+			*diffImagePath = filepath.Join(appDir, "diffractionImage8bit.png")
+			displayImage(imagePanel, *diffImagePath)
+			onImageReady()
 			showResultsWindow(w, appDir)
 		})
 	}()
@@ -223,6 +274,50 @@ func displayImage(panel *fyne.Container, path string) {
 	panel.Layout = layout.NewStackLayout()
 	panel.Objects = []fyne.CanvasObject{img}
 	panel.Refresh()
+}
+
+// drawPathLine loads the image at imagePath, draws a 4-pixel wide red
+// horizontal line at the vertical center plus offset rows, and displays the
+// result in the given panel.
+func drawPathLine(panel *fyne.Container, imagePath string, offset int) {
+	f, err := os.Open(imagePath)
+	if err != nil {
+		return
+	}
+	src, _, err := image.Decode(f)
+	f.Close()
+	if err != nil {
+		return
+	}
+
+	bounds := src.Bounds()
+	dst := image.NewRGBA(bounds)
+	draw.Draw(dst, bounds, src, bounds.Min, draw.Src)
+
+	lineY := bounds.Min.Y + bounds.Dy()/2 + offset
+	red := color.RGBA{R: 255, A: 255}
+	for dy := 0; dy < 4; dy++ {
+		y := lineY + dy
+		if y < bounds.Min.Y || y >= bounds.Max.Y {
+			continue
+		}
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			dst.Set(x, y, red)
+		}
+	}
+
+	img := canvas.NewImageFromImage(dst)
+	img.FillMode = canvas.ImageFillContain
+	panel.Layout = layout.NewStackLayout()
+	panel.Objects = []fyne.CanvasObject{img}
+	panel.Refresh()
+}
+
+// parsePathOffset parses the path offset entry text as an integer,
+// returning 0 for empty or invalid input.
+func parsePathOffset(text string) int {
+	n, _ := strconv.Atoi(text)
+	return n
 }
 
 // showResultsWindow opens a new window displaying lightCurvePlot.png and
