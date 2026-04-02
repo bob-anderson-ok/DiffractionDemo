@@ -92,11 +92,36 @@ func extractFloat(text, key string) (float64, error) {
 	return strconv.ParseFloat(m[1], 64)
 }
 
+// ApplyExposure returns a new slice where each value is the average of a
+// sliding window of the given width centered on the original data. When the
+// window extends past the right edge of the data, missing values are
+// substituted with 1.0 so the output length matches the input length.
+func ApplyExposure(values []float64, windowSize int) []float64 {
+	n := len(values)
+	if windowSize <= 1 || n == 0 {
+		return values
+	}
+	result := make([]float64, n)
+	for i := range result {
+		sum := 0.0
+		for j := 0; j < windowSize; j++ {
+			idx := i + j
+			if idx < n {
+				sum += values[idx]
+			} else {
+				sum += 1.0
+			}
+		}
+		result[i] = sum / float64(windowSize)
+	}
+	return result
+}
+
 // PlotLightCurve renders a line plot of the given intensity values using
 // gonum/plot with grid, axis labels, and tick marks. If edges is non-empty,
 // full-height red vertical lines are drawn at those data-index positions.
 // Returns the plot as an RGBA image.
-func PlotLightCurve(values []float64, width, height int, edges []int, yMax, kmPerPixel float64) *image.RGBA {
+func PlotLightCurve(values []float64, width, height int, edges []int, yMax, kmPerPixel float64, integrated []float64) *image.RGBA {
 	p := plot.New()
 	p.Title.Text = "Light Curve"
 	if kmPerPixel > 0 {
@@ -133,6 +158,19 @@ func PlotLightCurve(values []float64, width, height int, edges []int, yMax, kmPe
 			edgeLine.Width = vg.Points(1.5)
 			p.Add(edgeLine)
 		}
+	}
+
+	// Overlay exposure-integrated light curve in green.
+	if len(integrated) >= 2 {
+		iPts := make(plotter.XYs, len(integrated))
+		for i, v := range integrated {
+			iPts[i].X = float64(i) * kmPerPixel
+			iPts[i].Y = v
+		}
+		iLine, _ := plotter.NewLine(iPts)
+		iLine.Color = color.RGBA{G: 180, A: 255}
+		iLine.Width = vg.Points(1.5)
+		p.Add(iLine)
 	}
 
 	// Render to an in-memory image.

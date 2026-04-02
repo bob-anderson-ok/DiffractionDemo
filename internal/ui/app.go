@@ -9,6 +9,7 @@ import (
 	"image/draw"
 	_ "image/png"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,6 +76,7 @@ func Run() {
 	var diffImagePath string
 	var paramsDirty bool
 	var yMaxEntry *focusLostEntry
+	var exposureEntry *focusLostEntry
 
 	paramsEntry.OnChanged = func(_ string) {
 		paramsDirty = true
@@ -113,13 +115,18 @@ func Run() {
 		return scale
 	}
 
+	// exposurePixels returns the camera exposure time in pixels.
+	exposurePixels := func() int {
+		return calcExposurePixels(paramsEntry.Text, exposureEntry.Text, kmPerPixel())
+	}
+
 	pathOffsetEntry.OnFocusLost = func() {
 		if diffImagePath != "" {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
 			edges := findEdgesForOffset(appDir, offset)
 			drawPathLine(imagePanel, diffImagePath, offset, edges)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel())
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
 		}
 	}
 
@@ -138,7 +145,7 @@ func Run() {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
 			edges := findEdgesForOffset(appDir, offset)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel())
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
 		}
 	}
 
@@ -154,7 +161,7 @@ func Run() {
 			appDir := filepath.Dir(diffImagePath)
 			edges := findEdgesForOffset(appDir, offset)
 			drawPathLine(imagePanel, diffImagePath, offset, edges)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel())
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
 		})
 	}
 	pathOffsetLabel := widget.NewLabel("Path offset from center (rows):")
@@ -165,7 +172,7 @@ func Run() {
 	yMaxBox := container.NewHBox(yMaxLabel,
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), yMaxEntry))
 
-	exposureEntry := newFocusLostEntry()
+	exposureEntry = newFocusLostEntry()
 	exposureEntry.SetText("0")
 	exposureEntry.OnChanged = func(text string) {
 		if text == "" || text == "." {
@@ -177,6 +184,12 @@ func Run() {
 	}
 	exposureEntry.OnFocusLost = func() {
 		printExposurePixels(paramsEntry.Text, exposureEntry.Text, kmPerPixel())
+		if diffImagePath != "" {
+			offset := parsePathOffset(pathOffsetEntry.Text)
+			appDir := filepath.Dir(diffImagePath)
+			edges := findEdgesForOffset(appDir, offset)
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
+		}
 	}
 	exposureLabel := widget.NewLabel("Exposure (s):")
 	exposureBox := container.NewHBox(exposureLabel,
@@ -439,6 +452,21 @@ func printExposurePixels(paramsText, exposureText string, kmPerPx float64) {
 	fmt.Printf("Exposure %.4f s at shadow speed %.4f km/s = %.2f pixels\n", exposure, speed, pixels)
 }
 
+// calcExposurePixels returns the camera exposure time rounded to the nearest
+// integer number of pixels, or 0 if the exposure is zero or parameters are
+// unavailable.
+func calcExposurePixels(paramsText, exposureText string, kmPerPx float64) int {
+	exposure, err := strconv.ParseFloat(exposureText, 64)
+	if err != nil || exposure == 0 || kmPerPx == 0 {
+		return 0
+	}
+	speed, err := report.ParseShadowSpeed(paramsText)
+	if err != nil {
+		return 0
+	}
+	return int(math.Round(exposure * speed / kmPerPx))
+}
+
 // findEdgesForOffset returns the geometric shadow edge positions for the
 // given path offset, or nil if the shadow image cannot be read.
 func findEdgesForOffset(appDir string, offset int) []int {
@@ -450,14 +478,18 @@ func findEdgesForOffset(appDir string, offset int) []int {
 // plotRowLightCurve extracts intensity values from the center+offset row of
 // targetImage16bit.png and plots them with the provided edge markers as a
 // light curve in the given panel.
-func plotRowLightCurve(w fyne.Window, panel *fyne.Container, appDir string, offset int, edges []int, yMax, kmPerPixel float64) {
+func plotRowLightCurve(w fyne.Window, panel *fyne.Container, appDir string, offset int, edges []int, yMax, kmPerPixel float64, exposurePixels int) {
 	targetPath := filepath.Join(appDir, "targetImage16bit.png")
 	values, err := report.ExtractRow(targetPath, offset)
 	if err != nil {
 		dialog.ShowError(fmt.Errorf("cannot extract light curve: %w", err), w)
 		return
 	}
-	plotImg := report.PlotLightCurve(values, 1200, 400, edges, yMax, kmPerPixel)
+	var integrated []float64
+	if exposurePixels > 1 {
+		integrated = report.ApplyExposure(values, exposurePixels)
+	}
+	plotImg := report.PlotLightCurve(values, 1200, 400, edges, yMax, kmPerPixel, integrated)
 	img := canvas.NewImageFromImage(plotImg)
 	img.FillMode = canvas.ImageFillContain
 	panel.Layout = layout.NewStackLayout()
