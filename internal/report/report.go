@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"math"
 	_ "image/png"
 	"os"
 	"regexp"
@@ -64,6 +65,21 @@ func ParsePixelScale(json5Text string) (float64, error) {
 		return 0, fmt.Errorf("fundamental_plane_width_num_points is zero")
 	}
 	return widthKm / numPoints, nil
+}
+
+// ParseShadowSpeed extracts dX_km_per_sec and dY_km_per_sec from a JSON5
+// parameters string and returns the shadow speed in km/s as
+// sqrt(dX^2 + dY^2).
+func ParseShadowSpeed(json5Text string) (float64, error) {
+	dx, err := extractFloat(json5Text, "dX_km_per_sec")
+	if err != nil {
+		return 0, err
+	}
+	dy, err := extractFloat(json5Text, "dY_km_per_sec")
+	if err != nil {
+		return 0, err
+	}
+	return math.Sqrt(dx*dx + dy*dy), nil
 }
 
 // extractFloat finds a key in JSON5 text and returns its numeric value.

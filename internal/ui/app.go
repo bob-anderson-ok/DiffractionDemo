@@ -165,7 +165,24 @@ func Run() {
 	yMaxBox := container.NewHBox(yMaxLabel,
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), yMaxEntry))
 
-	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, pathOffsetBox, yMaxBox, statusLabel)
+	exposureEntry := newFocusLostEntry()
+	exposureEntry.SetText("0")
+	exposureEntry.OnChanged = func(text string) {
+		if text == "" || text == "." {
+			return
+		}
+		if _, err := strconv.ParseFloat(text, 64); err != nil {
+			exposureEntry.SetText(text[:len(text)-1])
+		}
+	}
+	exposureEntry.OnFocusLost = func() {
+		printExposurePixels(paramsEntry.Text, exposureEntry.Text, kmPerPixel())
+	}
+	exposureLabel := widget.NewLabel("Exposure (s):")
+	exposureBox := container.NewHBox(exposureLabel,
+		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), exposureEntry))
+
+	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, pathOffsetBox, yMaxBox, exposureBox, statusLabel)
 	hSplit := container.NewHSplit(paramsScroll, imagePanel)
 	vSplit := container.NewVSplit(hSplit, lightCurvePanel)
 
@@ -296,11 +313,17 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 	btn.Disable()
 	status.SetText("Running IOTAdiffraction...")
 
+	progress := widget.NewProgressBarInfinite()
+	d := dialog.NewCustomWithoutButtons("Running IOTAdiffraction...", progress, w)
+	d.Show()
+
 	go func() {
 		cmd := exec.Command(diffExe, paramsFile, "False")
 		cmd.Dir = appDir
 		output, err := cmd.CombinedOutput()
 		fyne.Do(func() {
+			d.Hide()
+			progress.Stop()
 			if err != nil {
 				btn.Enable()
 				status.SetText("Failed")
@@ -394,6 +417,26 @@ func parseYMax(text string) float64 {
 		return defaultYMax
 	}
 	return v
+}
+
+// printExposurePixels computes and prints how many pixels the given exposure
+// time spans, based on the shadow speed and pixel scale from the parameters.
+func printExposurePixels(paramsText, exposureText string, kmPerPx float64) {
+	exposure, err := strconv.ParseFloat(exposureText, 64)
+	if err != nil || exposure == 0 {
+		return
+	}
+	speed, err := report.ParseShadowSpeed(paramsText)
+	if err != nil {
+		fmt.Printf("Cannot compute shadow speed: %v\n", err)
+		return
+	}
+	if kmPerPx == 0 {
+		fmt.Println("Cannot compute exposure pixels: pixel scale is zero")
+		return
+	}
+	pixels := exposure * speed / kmPerPx
+	fmt.Printf("Exposure %.4f s at shadow speed %.4f km/s = %.2f pixels\n", exposure, speed, pixels)
 }
 
 // findEdgesForOffset returns the geometric shadow edge positions for the
