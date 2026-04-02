@@ -1,0 +1,35 @@
+ // The sensor for this table is ?  (monochrome)
+ // It's used in the Watec 902 camera
+
+ // Format of the table is (an array of arrays) of the form:
+ // [
+ //   [wavelength_nm,  qe_percent],
+ //   [wavelength_nm,  qe_percent],
+ //   [wavelength_nm,  qe_percent],
+ //   ...
+ //   [wavelength_nm,  qe_percent],
+ // ]
+
+ // Note that wavelengths must be in ascending order.
+ // qe_percent is just used as a weighting factor, and wavelength weights will ultimately be
+ // normalized so that the sum of the weights is 1.0. As a result, QE percentage is not the
+ // mandatory units to use: if you have other values that can be used to weight each
+ // wavelength contribution, go ahead.
+
+ [
+    [      380.0,      52   ],
+    [      420.0,      53   ],
+    [      460.0,      82   ],
+    [      500.0,      96   ],
+    [      540.0,      93   ],
+    [      580.0,      95   ],
+    [      620.0,     100   ],
+    [      660.0,      90   ],
+    [      700.0,      74   ],
+    [      740.0,      59   ],
+    [      780.0,      48   ],
+    [      820.0,      37   ],
+    [      860.0,      31   ],
+    [      900.0,      20   ],
+    [      940.0,      15   ],
+  ]
