@@ -1,0 +1,11 @@
+# Build artifacts
+*.exe
+
+# Generated images
+camera_response.png
+diffractionImage8bit.png
+diffractionImageWithPath.png
+diffractionResults.png
+geometricShadow.png
+lightCurvePlot.png
+targetImage16bit.png
