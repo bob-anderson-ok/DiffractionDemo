@@ -101,8 +101,10 @@ func Run() {
 	pathOffsetEntry.OnFocusLost = func() {
 		if diffImagePath != "" {
 			offset := parsePathOffset(pathOffsetEntry.Text)
+			appDir := filepath.Dir(diffImagePath)
 			drawPathLine(imagePanel, diffImagePath, offset)
-			plotRowLightCurve(w, lightCurvePanel, filepath.Dir(diffImagePath), offset)
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset)
+			printEdges(appDir, offset)
 		}
 	}
 
@@ -111,8 +113,10 @@ func Run() {
 	runBtn.OnTapped = func() {
 		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, func() {
 			offset := parsePathOffset(pathOffsetEntry.Text)
+			appDir := filepath.Dir(diffImagePath)
 			drawPathLine(imagePanel, diffImagePath, offset)
-			plotRowLightCurve(w, lightCurvePanel, filepath.Dir(diffImagePath), offset)
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset)
+			printEdges(appDir, offset)
 		})
 	}
 	pathOffsetLabel := widget.NewLabel("Path offset from center (rows):")
@@ -340,6 +344,18 @@ func plotRowLightCurve(w fyne.Window, panel *fyne.Container, appDir string, offs
 	panel.Layout = layout.NewStackLayout()
 	panel.Objects = []fyne.CanvasObject{img}
 	panel.Refresh()
+}
+
+// printEdges finds geometric shadow edges along the observation path row
+// and prints them to the terminal.
+func printEdges(appDir string, offset int) {
+	shadowPath := filepath.Join(appDir, "geometricShadow.png")
+	edges, err := report.FindEdges(shadowPath, offset)
+	if err != nil {
+		fmt.Printf("FindEdges error: %v\n", err)
+		return
+	}
+	fmt.Printf("Geometric shadow edges at offset %d: %v\n", offset, edges)
 }
 
 // showResultsWindow opens a new window displaying lightCurvePlot.png and

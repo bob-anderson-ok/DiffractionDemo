@@ -102,6 +102,54 @@ func PlotLightCurve(values []uint16, width, height int) *image.RGBA {
 	return img
 }
 
+// FindEdges traverses the observation-path row of geometricShadow.png and
+// returns the x positions where transitions occur. The first edge is the
+// first white-to-black transition; after that every transition (black-to-white
+// or white-to-black) is recorded.
+func FindEdges(imagePath string, offsetFromCenter int) ([]int, error) {
+	f, err := os.Open(imagePath)
+	if err != nil {
+		return nil, err
+	}
+	src, _, decErr := image.Decode(f)
+	if closeErr := f.Close(); closeErr != nil {
+		return nil, closeErr
+	}
+	if decErr != nil {
+		return nil, decErr
+	}
+
+	bounds := src.Bounds()
+	row := bounds.Min.Y + bounds.Dy()/2 + offsetFromCenter
+	if row < bounds.Min.Y || row >= bounds.Max.Y {
+		return nil, fmt.Errorf("row %d outside image bounds [%d, %d)", row, bounds.Min.Y, bounds.Max.Y)
+	}
+
+	isWhite := func(x int) bool {
+		r, _, _, _ := src.At(x, row).RGBA()
+		return r > 0x7FFF
+	}
+
+	var edges []int
+	foundFirst := false
+
+	prev := isWhite(bounds.Min.X)
+	for x := bounds.Min.X + 1; x < bounds.Max.X; x++ {
+		cur := isWhite(x)
+		if !foundFirst {
+			// Looking for the first white-to-black transition.
+			if prev && !cur {
+				edges = append(edges, x)
+				foundFirst = true
+			}
+		} else if cur != prev {
+			edges = append(edges, x)
+		}
+		prev = cur
+	}
+	return edges, nil
+}
+
 // bresenham draws a line between two points using Bresenham's algorithm.
 func bresenham(img *image.RGBA, x0, y0, x1, y1 int, c color.Color) {
 	dx := x1 - x0
