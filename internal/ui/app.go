@@ -7,7 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
-	_ "image/png"
+	"image/png"
 	"io"
 	"math"
 	"os"
@@ -199,7 +199,71 @@ func Run() {
 	exposureBox := container.NewHBox(exposureLabel,
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), exposureEntry))
 
-	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, pathOffsetBox, yMaxBox, exposureBox, showPlotsCheck, statusLabel)
+	angleEntry := newFocusLostEntry()
+	angleEntry.SetText("0")
+	angleEntry.OnChanged = func(text string) {
+		if text == "" || text == "-" || text == "." || text == "-." {
+			return
+		}
+		if _, err := strconv.ParseFloat(text, 64); err != nil {
+			angleEntry.SetText(text[:len(text)-1])
+		}
+	}
+	angleEntry.OnFocusLost = func() {
+		deg, err := strconv.ParseFloat(angleEntry.Text, 64)
+		if err != nil {
+			return
+		}
+		deg = math.Mod(deg, 360)
+		if deg < 0 {
+			deg += 360
+		}
+		rotAngleRadians := deg * math.Pi / 180.0
+		fmt.Printf("Angle: %.2f degrees (mod 360), rotAngleRadians: %.6f\n", deg, rotAngleRadians)
+
+		appDir, err := os.Getwd()
+		if err != nil {
+			return
+		}
+		imgPath := filepath.Join(appDir, "diffractionImage8bit.png")
+		f, err := os.Open(imgPath)
+		if err != nil {
+			fmt.Printf("Cannot open diffractionImage8bit.png: %v\n", err)
+			return
+		}
+		src, _, err := image.Decode(f)
+		f.Close()
+		if err != nil {
+			fmt.Printf("Cannot decode diffractionImage8bit.png: %v\n", err)
+			return
+		}
+		gray, ok := src.(*image.Gray)
+		if !ok {
+			gray = report.ToGray(src)
+		}
+		// Use the upper-right corner pixel as the background fill value.
+		bg := gray.GrayAt(gray.Bounds().Max.X-1, gray.Bounds().Min.Y).Y
+		rotated := report.RotateGrayBilinear(gray, rotAngleRadians, bg)
+		bounds := rotated.Bounds()
+		fmt.Printf("Rotated image dimensions: %d x %d pixels\n", bounds.Dx(), bounds.Dy())
+
+		outPath := filepath.Join(appDir, "diffractionImage8bitRotated.png")
+		if out, err := os.Create(outPath); err == nil {
+			png.Encode(out, rotated)
+			out.Close()
+		}
+
+		img := canvas.NewImageFromImage(rotated)
+		img.FillMode = canvas.ImageFillContain
+		imagePanel.Layout = layout.NewStackLayout()
+		imagePanel.Objects = []fyne.CanvasObject{img}
+		imagePanel.Refresh()
+	}
+	angleLabel := widget.NewLabel("Angle (deg):")
+	angleBox := container.NewHBox(angleLabel,
+		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), angleEntry))
+
+	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, pathOffsetBox, yMaxBox, exposureBox, angleBox, showPlotsCheck, statusLabel)
 	hSplit := container.NewHSplit(paramsScroll, imagePanel)
 	vSplit := container.NewVSplit(hSplit, lightCurvePanel)
 
@@ -262,6 +326,12 @@ func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, p
 		entry.SetText(string(data))
 		*dirty = false
 		saveAsBtn.Enable()
+
+		// Report path angle to terminal when a parameters file is loaded.
+		if dx, dy, err := report.ParseShadowVelocity(string(data)); err == nil {
+			angle := report.PathAngleFromVelocity(dx, dy)
+			fmt.Printf("Path angle: %.2f degrees  (dX=%.3f, dY=%.3f km/s)\n", angle, dx, dy)
+		}
 
 		// Check if the file is writable.
 		if f, err := os.OpenFile(filePath, os.O_WRONLY, 0); err != nil {
@@ -434,7 +504,13 @@ func displayImage(panel *fyne.Container, path string) {
 // horizontal line at the vertical center plus offset rows, draws green
 // vertical lines at edge positions, and displays the result in the panel.
 func drawPathLine(panel *fyne.Container, imagePath string, offset int, edges []int) {
-	f, err := os.Open(imagePath)
+	// Prefer the rotated image if it exists.
+	rotatedPath := filepath.Join(filepath.Dir(imagePath), "diffractionImage8bitRotated.png")
+	usePath := imagePath
+	if _, err := os.Stat(rotatedPath); err == nil {
+		usePath = rotatedPath
+	}
+	f, err := os.Open(usePath)
 	if err != nil {
 		return
 	}

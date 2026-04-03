@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"math"
 	_ "image/png"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -67,19 +67,40 @@ func ParsePixelScale(json5Text string) (float64, error) {
 	return widthKm / numPoints, nil
 }
 
+// ParseShadowVelocity extracts dX_km_per_sec and dY_km_per_sec from a JSON5
+// parameters string and returns both components.
+func ParseShadowVelocity(json5Text string) (dx, dy float64, err error) {
+	dx, err = extractFloat(json5Text, "dX_km_per_sec")
+	if err != nil {
+		return 0, 0, err
+	}
+	dy, err = extractFloat(json5Text, "dY_km_per_sec")
+	if err != nil {
+		return 0, 0, err
+	}
+	return dx, dy, nil
+}
+
 // ParseShadowSpeed extracts dX_km_per_sec and dY_km_per_sec from a JSON5
 // parameters string and returns the shadow speed in km/s as
 // sqrt(dX^2 + dY^2).
 func ParseShadowSpeed(json5Text string) (float64, error) {
-	dx, err := extractFloat(json5Text, "dX_km_per_sec")
-	if err != nil {
-		return 0, err
-	}
-	dy, err := extractFloat(json5Text, "dY_km_per_sec")
+	dx, dy, err := ParseShadowVelocity(json5Text)
 	if err != nil {
 		return 0, err
 	}
 	return math.Sqrt(dx*dx + dy*dy), nil
+}
+
+// PathAngleFromVelocity computes the observation path angle in degrees
+// measured counter-clockwise from the positive Y-axis, given the shadow
+// velocity components dxKmPerSec and dyKmPerSec. The result is in [0, 359.99....].
+func PathAngleFromVelocity(dxKmPerSec, dyKmPerSec float64) float64 {
+	angle := math.Atan2(-dxKmPerSec, -dyKmPerSec) * 180.0 / math.Pi
+	if angle < 0.0 {
+		angle += 360.0
+	}
+	return angle
 }
 
 // extractFloat finds a key in JSON5 text and returns its numeric value.
@@ -235,4 +256,3 @@ func FindEdges(imagePath string, offsetFromCenter int) ([]int, error) {
 	}
 	return edges, nil
 }
-
