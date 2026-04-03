@@ -156,19 +156,6 @@ func Run() {
 	showPlotsCheck := widget.NewCheck("Show IOTAdiffraction plots", nil)
 
 	statusLabel := widget.NewLabel("")
-	runBtn.OnTapped = func() {
-		if paramsDirty && paramsFilePath != "" {
-			saveParameters(w, paramsEntry, paramsFilePath)
-			paramsDirty = false
-		}
-		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, showPlotsCheck.Checked, &diffCmd, func() {
-			offset := parsePathOffset(pathOffsetEntry.Text)
-			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(appDir, offset)
-			drawPathLine(imagePanel, diffImagePath, offset, edges)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
-		})
-	}
 	pathOffsetLabel := widget.NewLabel("Path offset from center (rows):")
 	entryMinSize := pathOffsetEntry.MinSize()
 	pathOffsetBox := container.NewHBox(pathOffsetLabel,
@@ -209,11 +196,9 @@ func Run() {
 			angleEntry.SetText(text[:len(text)-1])
 		}
 	}
-	angleEntry.OnFocusLost = func() {
-		deg, err := strconv.ParseFloat(angleEntry.Text, 64)
-		if err != nil {
-			return
-		}
+	// rotateImages rotates all three output images by the given angle in
+	// degrees and displays the rotated diffraction image in the panel.
+	rotateImages := func(deg float64) {
 		deg = math.Mod(deg, 360)
 		if deg < 0 {
 			deg += 360
@@ -253,11 +238,75 @@ func Run() {
 			out.Close()
 		}
 
+		// Rotate geometricShadow.png with bg=255.
+		geoPath := filepath.Join(appDir, "geometricShadow.png")
+		if gf, err := os.Open(geoPath); err == nil {
+			if geoSrc, _, err := image.Decode(gf); err == nil {
+				geoGray, ok := geoSrc.(*image.Gray)
+				if !ok {
+					geoGray = report.ToGray(geoSrc)
+				}
+				geoRotated := report.RotateGrayBilinear(geoGray, rotAngleRadians, 255)
+				if out, err := os.Create(filepath.Join(appDir, "geometricShadowRotated.png")); err == nil {
+					png.Encode(out, geoRotated)
+					out.Close()
+				}
+			}
+			gf.Close()
+		}
+
+		// Rotate targetImage16bit.png with bg=4000.
+		tgtPath := filepath.Join(appDir, "targetImage16bit.png")
+		if tf, err := os.Open(tgtPath); err == nil {
+			if tgtSrc, _, err := image.Decode(tf); err == nil {
+				tgtGray16, ok := tgtSrc.(*image.Gray16)
+				if !ok {
+					tgtGray16 = report.ToGray16(tgtSrc)
+				}
+				tgtRotated := report.RotateGray16Bilinear(tgtGray16, rotAngleRadians, 4000)
+				if out, err := os.Create(filepath.Join(appDir, "targetImage16bitRotated.png")); err == nil {
+					png.Encode(out, tgtRotated)
+					out.Close()
+				}
+			}
+			tf.Close()
+		}
+
 		img := canvas.NewImageFromImage(rotated)
 		img.FillMode = canvas.ImageFillContain
 		imagePanel.Layout = layout.NewStackLayout()
 		imagePanel.Objects = []fyne.CanvasObject{img}
 		imagePanel.Refresh()
+	}
+
+	angleEntry.OnFocusLost = func() {
+		deg, err := strconv.ParseFloat(angleEntry.Text, 64)
+		if err != nil {
+			return
+		}
+		rotateImages(deg)
+		if diffImagePath != "" {
+			offset := parsePathOffset(pathOffsetEntry.Text)
+			appDir := filepath.Dir(diffImagePath)
+			edges := findEdgesForOffset(appDir, offset)
+			drawPathLine(imagePanel, diffImagePath, offset, edges)
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
+		}
+	}
+
+	runBtn.OnTapped = func() {
+		if paramsDirty && paramsFilePath != "" {
+			saveParameters(w, paramsEntry, paramsFilePath)
+			paramsDirty = false
+		}
+		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, showPlotsCheck.Checked, &diffCmd, func() {
+			rotateImages(0)
+			offset := parsePathOffset(pathOffsetEntry.Text)
+			appDir := filepath.Dir(diffImagePath)
+			edges := findEdgesForOffset(appDir, offset)
+			drawPathLine(imagePanel, diffImagePath, offset, edges)
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
+		})
 	}
 	angleLabel := widget.NewLabel("Angle (deg):")
 	angleBox := container.NewHBox(angleLabel,
@@ -419,12 +468,17 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 	dlg := dialog.NewCustomWithoutButtons("Running IOTAdiffraction...", progress, w)
 	dlg.Show()
 
-	// Record the current mod time of the output image so we can detect when
-	// IOTAdiffraction has written a new one.
+	// Record the current mod times of output images so we can detect when
+	// IOTAdiffraction has written new ones.
 	outputPath := filepath.Join(appDir, "diffractionImage8bit.png")
+	targetPath := filepath.Join(appDir, "targetImage16bit.png")
 	var prevModTime time.Time
 	if info, err := os.Stat(outputPath); err == nil {
 		prevModTime = info.ModTime()
+	}
+	var prevTargetModTime time.Time
+	if info, err := os.Stat(targetPath); err == nil {
+		prevTargetModTime = info.ModTime()
 	}
 
 	go func() {
@@ -447,19 +501,28 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 			return
 		}
 
-		// Poll until the output image is written (mod time changes) or
+		// Poll until both output images are written (mod times change) or
 		// the process exits, whichever comes first.
-		outputReady := false
-		for !outputReady {
+		diffReady := false
+		targetReady := false
+		for !diffReady || !targetReady {
 			time.Sleep(500 * time.Millisecond)
-			if info, err := os.Stat(outputPath); err == nil && info.ModTime().After(prevModTime) {
-				outputReady = true
+			if !diffReady {
+				if info, err := os.Stat(outputPath); err == nil && info.ModTime().After(prevModTime) {
+					diffReady = true
+				}
+			}
+			if !targetReady {
+				if info, err := os.Stat(targetPath); err == nil && info.ModTime().After(prevTargetModTime) {
+					targetReady = true
+				}
 			}
 			// Also stop polling if the process has already exited.
 			if cmd.ProcessState != nil {
 				break
 			}
 		}
+		outputReady := diffReady && targetReady
 
 		// Check for early process exit with error (no output produced).
 		if !outputReady {
@@ -504,13 +567,8 @@ func displayImage(panel *fyne.Container, path string) {
 // horizontal line at the vertical center plus offset rows, draws green
 // vertical lines at edge positions, and displays the result in the panel.
 func drawPathLine(panel *fyne.Container, imagePath string, offset int, edges []int) {
-	// Prefer the rotated image if it exists.
 	rotatedPath := filepath.Join(filepath.Dir(imagePath), "diffractionImage8bitRotated.png")
-	usePath := imagePath
-	if _, err := os.Stat(rotatedPath); err == nil {
-		usePath = rotatedPath
-	}
-	f, err := os.Open(usePath)
+	f, err := os.Open(rotatedPath)
 	if err != nil {
 		return
 	}
@@ -594,7 +652,7 @@ func calcExposurePixels(paramsText, exposureText string, kmPerPx float64) int {
 // findEdgesForOffset returns the geometric shadow edge positions for the
 // given path offset, or nil if the shadow image cannot be read.
 func findEdgesForOffset(appDir string, offset int) []int {
-	shadowPath := filepath.Join(appDir, "geometricShadow.png")
+	shadowPath := filepath.Join(appDir, "geometricShadowRotated.png")
 	edges, _ := report.FindEdges(shadowPath, offset)
 	return edges
 }
@@ -603,7 +661,7 @@ func findEdgesForOffset(appDir string, offset int) []int {
 // targetImage16bit.png and plots them with the provided edge markers as a
 // light curve in the given panel.
 func plotRowLightCurve(w fyne.Window, panel *fyne.Container, appDir string, offset int, edges []int, yMax, kmPerPixel float64, exposurePixels int) {
-	targetPath := filepath.Join(appDir, "targetImage16bit.png")
+	targetPath := filepath.Join(appDir, "targetImage16bitRotated.png")
 	values, err := report.ExtractRow(targetPath, offset)
 	if err != nil {
 		dialog.ShowError(fmt.Errorf("cannot extract light curve: %w", err), w)
