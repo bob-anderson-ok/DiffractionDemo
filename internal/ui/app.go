@@ -32,6 +32,8 @@ const (
 
 	prefWindowWidth  = "window_width"
 	prefWindowHeight = "window_height"
+	prefWindowX      = "window_x"
+	prefWindowY      = "window_y"
 	prefHSplitOffset = "hsplit_offset"
 	prefVSplitOffset = "vsplit_offset"
 
@@ -95,11 +97,15 @@ func Run() {
 	})
 	saveAsBtn.Disable()
 
-	runBtn := widget.NewButton("Run Diffraction", nil)
+	runBtn := widget.NewButton("Run IOTAdiffraction", nil)
+	runBtn.Importance = widget.HighImportance
 
 	openBtn := widget.NewButton("Open Parameters File", func() {
 		openParametersFile(w, paramsEntry, &sourceDir, &paramsFilePath, saveFileBtn, saveAsBtn, runBtn, &paramsDirty)
 	})
+	openBtn.Importance = widget.WarningImportance
+	saveFileBtn.Importance = widget.SuccessImportance
+	saveAsBtn.Importance = widget.SuccessImportance
 
 	pathOffsetEntry := newFocusLostEntry()
 	pathOffsetEntry.SetPlaceHolder("0")
@@ -124,7 +130,12 @@ func Run() {
 		return calcExposurePixels(paramsEntry.Text, exposureEntry.Text, kmPerPixel())
 	}
 
+	pathOffsetKmLabel := widget.NewLabel("")
 	pathOffsetEntry.OnFocusLost = func() {
+		if scale := kmPerPixel(); scale > 0 {
+			offsetKm := float64(parsePathOffset(pathOffsetEntry.Text)) * scale
+			pathOffsetKmLabel.SetText(fmt.Sprintf("(%.3f km)", offsetKm))
+		}
 		if diffImagePath != "" {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
@@ -158,8 +169,13 @@ func Run() {
 	statusLabel := widget.NewLabel("")
 	pathOffsetLabel := widget.NewLabel("Path offset from center (rows):")
 	entryMinSize := pathOffsetEntry.MinSize()
+	// Preallocate space for the km label so it doesn't push adjacent widgets.
+	pathOffsetKmLabel.SetText("                              ")
+	kmLabelMinSize := pathOffsetKmLabel.MinSize()
+	pathOffsetKmLabel.SetText("")
 	pathOffsetBox := container.NewHBox(pathOffsetLabel,
-		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), pathOffsetEntry))
+		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), pathOffsetEntry),
+		container.NewGridWrap(kmLabelMinSize, pathOffsetKmLabel))
 	yMaxLabel := widget.NewLabel("Y max:")
 	yMaxBox := container.NewHBox(yMaxLabel,
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), yMaxEntry))
@@ -182,7 +198,7 @@ func Run() {
 			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
 		}
 	}
-	exposureLabel := widget.NewLabel("Exposure (s):")
+	exposureLabel := widget.NewLabel("Camera exposure (secs):")
 	exposureBox := container.NewHBox(exposureLabel,
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), exposureEntry))
 
@@ -204,7 +220,6 @@ func Run() {
 			deg += 360
 		}
 		rotAngleRadians := deg * math.Pi / 180.0
-		fmt.Printf("Angle: %.2f degrees (mod 360), rotAngleRadians: %.6f\n", deg, rotAngleRadians)
 
 		appDir, err := os.Getwd()
 		if err != nil {
@@ -229,8 +244,6 @@ func Run() {
 		// Use the upper-right corner pixel as the background fill value.
 		bg := gray.GrayAt(gray.Bounds().Max.X-1, gray.Bounds().Min.Y).Y
 		rotated := report.RotateGrayBilinear(gray, rotAngleRadians, bg)
-		bounds := rotated.Bounds()
-		fmt.Printf("Rotated image dimensions: %d x %d pixels\n", bounds.Dx(), bounds.Dy())
 
 		outPath := filepath.Join(appDir, "diffractionImage8bitRotated.png")
 		if out, err := os.Create(outPath); err == nil {
@@ -312,9 +325,16 @@ func Run() {
 	angleBox := container.NewHBox(angleLabel,
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), angleEntry))
 
-	toolbar := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, runBtn, pathOffsetBox, yMaxBox, exposureBox, angleBox, showPlotsCheck, statusLabel)
+	rotateStdBtn := widget.NewButton("Rotate images to standard position", func() {
+		dialog.ShowInformation("Not yet implemented", "This feature is not yet implemented.", w)
+	})
+
+	toolbarRow1 := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, widget.NewSeparator(), runBtn, showPlotsCheck)
+	toolbarRow2 := container.NewHBox(pathOffsetBox, exposureBox, angleBox, rotateStdBtn)
+	toolbar := container.NewVBox(toolbarRow1, toolbarRow2)
 	hSplit := container.NewHSplit(paramsScroll, imagePanel)
-	vSplit := container.NewVSplit(hSplit, lightCurvePanel)
+	lightCurveWithYMax := container.NewBorder(nil, nil, yMaxBox, nil, lightCurvePanel)
+	vSplit := container.NewVSplit(hSplit, lightCurveWithYMax)
 
 	restorePreferences(a.Preferences(), w, hSplit, vSplit)
 
@@ -375,12 +395,6 @@ func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, p
 		entry.SetText(string(data))
 		*dirty = false
 		saveAsBtn.Enable()
-
-		// Report path angle to terminal when a parameters file is loaded.
-		if dx, dy, err := report.ParseShadowVelocity(string(data)); err == nil {
-			angle := report.PathAngleFromVelocity(dx, dy)
-			fmt.Printf("Path angle: %.2f degrees  (dX=%.3f, dY=%.3f km/s)\n", angle, dx, dy)
-		}
 
 		// Check if the file is writable.
 		if f, err := os.OpenFile(filePath, os.O_WRONLY, 0); err != nil {
@@ -733,23 +747,41 @@ func getImageSize(path string) (width, height int, err error) {
 	return cfg.Width, cfg.Height, nil
 }
 
-// restorePreferences reads saved window size and splitter offsets from
-// persistent preferences and applies them.
+// restorePreferences reads saved window size, position, and splitter offsets
+// from persistent preferences and applies them.
 func restorePreferences(prefs fyne.Preferences, w fyne.Window, hSplit, vSplit *container.Split) {
 	width := prefs.FloatWithFallback(prefWindowWidth, defaultWidth)
 	height := prefs.FloatWithFallback(prefWindowHeight, defaultHeight)
 	w.Resize(fyne.NewSize(float32(width), float32(height)))
 
+	// Restore window position if previously saved (sentinel -1 means not set).
+	x := prefs.IntWithFallback(prefWindowX, -1)
+	y := prefs.IntWithFallback(prefWindowY, -1)
+	if x >= 0 && y >= 0 {
+		// Position must be applied after the window is shown, so defer it.
+		// RunNative handles its own thread marshaling — do not wrap in fyne.Do.
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			setWindowPosition(w, x, y)
+		}()
+	}
+
 	hSplit.SetOffset(prefs.FloatWithFallback(prefHSplitOffset, defaultHSplit))
 	vSplit.SetOffset(prefs.FloatWithFallback(prefVSplitOffset, defaultVSplit))
 }
 
-// savePreferences writes the current window size and splitter offsets to
-// persistent preferences.
+// savePreferences writes the current window size, position, and splitter
+// offsets to persistent preferences.
 func savePreferences(prefs fyne.Preferences, w fyne.Window, hSplit, vSplit *container.Split) {
 	size := w.Canvas().Size()
 	prefs.SetFloat(prefWindowWidth, float64(size.Width))
 	prefs.SetFloat(prefWindowHeight, float64(size.Height))
+
+	if x, y, ok := getWindowPosition(w); ok {
+		prefs.SetInt(prefWindowX, x)
+		prefs.SetInt(prefWindowY, y)
+	}
+
 	prefs.SetFloat(prefHSplitOffset, hSplit.Offset)
 	prefs.SetFloat(prefVSplitOffset, vSplit.Offset)
 }

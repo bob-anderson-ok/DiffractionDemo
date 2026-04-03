@@ -154,6 +154,7 @@ func PlotLightCurve(values []float64, width, height int, edges []int, yMax, kmPe
 	p.Y.Label.Text = "Intensity"
 	p.Y.Min = -0.1
 	p.Y.Max = yMax
+	p.Y.Tick.Marker = fixedIntervalTicker{Interval: 0.1, Min: p.Y.Min, Max: p.Y.Max}
 	p.Add(plotter.NewGrid())
 
 	if len(values) >= 2 {
@@ -255,4 +256,24 @@ func FindEdges(imagePath string, offsetFromCenter int) ([]int, error) {
 		prev = cur
 	}
 	return edges, nil
+}
+
+// fixedIntervalTicker generates tick marks at a fixed interval.
+type fixedIntervalTicker struct {
+	Interval float64
+	Min, Max float64
+}
+
+// Ticks returns tick marks from Min to Max at the configured Interval.
+func (t fixedIntervalTicker) Ticks(min, max float64) []plot.Tick {
+	var ticks []plot.Tick
+	// Start at the first interval multiple at or above min.
+	start := math.Ceil(min/t.Interval) * t.Interval
+	for v := start; v <= max; v += t.Interval {
+		ticks = append(ticks, plot.Tick{
+			Value: v,
+			Label: fmt.Sprintf("%.1f", v),
+		})
+	}
+	return ticks
 }
