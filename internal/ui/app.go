@@ -90,6 +90,9 @@ func Run() {
 	saveFileBtn := widget.NewButton("Save", func() {
 		saveParameters(w, paramsEntry, paramsFilePath)
 		paramsDirty = false
+		if err := report.ValidateParams(paramsEntry.Text); err != nil {
+			dialog.ShowError(fmt.Errorf("parameter file error:\n%s", err), w)
+		}
 	})
 	saveFileBtn.Disable()
 
@@ -134,7 +137,7 @@ func Run() {
 	pathOffsetKmLabel := widget.NewLabel("")
 	pathOffsetEntry.OnFocusLost = func() {
 		if scale := kmPerPixel(); scale > 0 {
-			offsetKm := float64(parsePathOffset(pathOffsetEntry.Text)) * scale
+			offsetKm := float64(-parsePathOffset(pathOffsetEntry.Text)) * scale
 			pathOffsetKmLabel.SetText(fmt.Sprintf("(%.3f km)", offsetKm))
 		}
 		if diffImagePath != "" {
@@ -313,17 +316,26 @@ func Run() {
 			saveParameters(w, paramsEntry, paramsFilePath)
 			paramsDirty = false
 		}
+		if err := report.ValidateParams(paramsEntry.Text); err != nil {
+			dialog.ShowError(fmt.Errorf("parameter file error:\n%s", err), w)
+			return
+		}
 		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, showPlotsCheck.Checked, &diffCmd, func() {
 			// Display the IOTAdiffraction-produced image with path overlay as-is.
 			appDir, _ := os.Getwd()
 			displayImage(imagePanel, filepath.Join(appDir, "diffractionImageWithPath.png"))
+			dialog.ShowInformation("Rotate images",
+				"The righthand plot shows the actual Fundamental plane with its observation path.\n\n"+
+					"It is more convenient to rotate images so that for this tool, the observation paths are horizontal "+
+					"and the star is moving left to right.\n\n"+
+					"You will need to click the Rotate button to cause this to happen.", w)
 		})
 	}
 	angleLabel := widget.NewLabel("Angle (deg):")
 	angleBox := container.NewHBox(angleLabel,
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), angleEntry))
 
-	rotateStdBtn := widget.NewButton("Rotate images to standard position", func() {
+	rotateStdBtn := widget.NewButton("Rotate so path is horizontal left to right", func() {
 		dx, dy, err := report.ParseShadowVelocity(paramsEntry.Text)
 		if err != nil {
 			dialog.ShowError(fmt.Errorf("cannot compute standard angle: %w", err), w)
@@ -341,6 +353,7 @@ func Run() {
 			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
 		}
 	})
+	rotateStdBtn.Importance = widget.HighImportance
 
 	toolbarRow1 := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, widget.NewSeparator(), runBtn, showPlotsCheck)
 	toolbarRow2 := container.NewHBox(pathOffsetBox, exposureBox, angleBox, rotateStdBtn)
@@ -464,6 +477,9 @@ func saveParametersAs(w fyne.Window, entry *widget.Entry, sourceDir string) {
 			return
 		}
 		dialog.ShowInformation("Saved", "File saved to:\n"+savePath, w)
+		if err := report.ValidateParams(entry.Text); err != nil {
+			dialog.ShowError(fmt.Errorf("parameter file error:\n%s", err), w)
+		}
 	}, w)
 }
 
@@ -593,9 +609,20 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 }
 
 // displayImage replaces the contents of a panel container with the image at
-// the given path, scaled to fill the available space.
+// the given path, scaled to fill the available space. The file is fully
+// decoded into memory before handing it to Fyne so that a partially-written
+// file does not cause a render error.
 func displayImage(panel *fyne.Container, path string) {
-	img := canvas.NewImageFromFile(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	src, _, err := image.Decode(f)
+	f.Close()
+	if err != nil {
+		return
+	}
+	img := canvas.NewImageFromImage(src)
 	img.FillMode = canvas.ImageFillContain
 	panel.Layout = layout.NewStackLayout()
 	panel.Objects = []fyne.CanvasObject{img}

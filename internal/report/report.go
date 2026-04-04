@@ -2,6 +2,8 @@
 package report
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"gonum.org/v1/plot"
 	"gonum.org/v1/plot/plotter"
@@ -101,6 +104,167 @@ func PathAngleFromVelocity(dxKmPerSec, dyKmPerSec float64) float64 {
 		angle += 360.0
 	}
 	return angle
+}
+
+// ValidateParams converts JSON5 parameters text to standard JSON and
+// validates it with encoding/json. Returns nil if the parameters are valid,
+// or an error describing the problem with the source line shown.
+func ValidateParams(json5Text string) error {
+	jsonText := json5ToJSON(json5Text)
+	var v interface{}
+	if err := json.Unmarshal([]byte(jsonText), &v); err != nil {
+		var syntaxErr *json.SyntaxError
+		if errors.As(err, &syntaxErr) {
+			lineNum := offsetToLine(jsonText, int(syntaxErr.Offset))
+			origLines := strings.Split(json5Text, "\n")
+			if lineNum >= 1 && lineNum <= len(origLines) {
+				return fmt.Errorf("line %d: %s\n   %s", lineNum, syntaxErr.Error(), strings.TrimSpace(origLines[lineNum-1]))
+			}
+		}
+		return fmt.Errorf("JSON parse error: %w", err)
+	}
+	return nil
+}
+
+// offsetToLine returns the 1-based line number at the given byte offset.
+// json.SyntaxError.Offset is the count of bytes read (one past the error
+// character), so we subtract one to land on the offending byte itself.
+func offsetToLine(text string, offset int) int {
+	if offset > 0 {
+		offset--
+	}
+	line := 1
+	for i := 0; i < offset && i < len(text); i++ {
+		if text[i] == '\n' {
+			line++
+		}
+	}
+	return line
+}
+
+// json5ToJSON converts JSON5 text to standard JSON by stripping comments,
+// quoting bare keys, removing trailing commas, and stripping + prefixes
+// on numbers.
+func json5ToJSON(json5Text string) string {
+	src := stripJSON5Comments(json5Text)
+	var out strings.Builder
+	out.Grow(len(src))
+
+	i := 0
+	for i < len(src) {
+		ch := src[i]
+
+		// Pass through string literals unchanged (normalise to double quotes).
+		if ch == '"' || ch == '\'' {
+			quote := ch
+			out.WriteByte('"')
+			i++
+			for i < len(src) && src[i] != quote {
+				if src[i] == '\\' {
+					out.WriteByte(src[i])
+					i++
+					if i < len(src) {
+						out.WriteByte(src[i])
+						i++
+					}
+					continue
+				}
+				out.WriteByte(src[i])
+				i++
+			}
+			out.WriteByte('"')
+			if i < len(src) {
+				i++ // skip closing quote
+			}
+			continue
+		}
+
+		// Bare identifier — quote it if followed by ':' (a JSON5 key).
+		if isIdentStart(ch) {
+			start := i
+			for i < len(src) && isIdentChar(src[i]) {
+				i++
+			}
+			ident := src[start:i]
+			// Look ahead past whitespace for ':'.
+			j := i
+			for j < len(src) && (src[j] == ' ' || src[j] == '\t') {
+				j++
+			}
+			if j < len(src) && src[j] == ':' {
+				out.WriteByte('"')
+				out.WriteString(ident)
+				out.WriteByte('"')
+			} else {
+				// Bare value (true/false/null) — write as-is.
+				out.WriteString(ident)
+			}
+			continue
+		}
+
+		// Strip leading '+' on numeric values.
+		if ch == '+' && i+1 < len(src) && src[i+1] >= '0' && src[i+1] <= '9' {
+			i++
+			continue
+		}
+
+		// Remove trailing commas before '}' or ']'.
+		if ch == ',' {
+			j := i + 1
+			for j < len(src) && (src[j] == ' ' || src[j] == '\t' || src[j] == '\n' || src[j] == '\r') {
+				j++
+			}
+			if j < len(src) && (src[j] == '}' || src[j] == ']') {
+				i++
+				continue
+			}
+		}
+
+		out.WriteByte(ch)
+		i++
+	}
+	return out.String()
+}
+
+func isIdentStart(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '$'
+}
+
+func isIdentChar(ch byte) bool {
+	return isIdentStart(ch) || (ch >= '0' && ch <= '9')
+}
+
+// stripJSON5Comments removes // line comments from JSON5 text, respecting
+// string literals so that "//" inside a quoted value is preserved.
+func stripJSON5Comments(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		inStr := false
+		var strCh byte
+		for j := 0; j < len(line); j++ {
+			ch := line[j]
+			if inStr {
+				if ch == '\\' {
+					j++
+					continue
+				}
+				if ch == strCh {
+					inStr = false
+				}
+				continue
+			}
+			if ch == '"' || ch == '\'' {
+				inStr = true
+				strCh = ch
+				continue
+			}
+			if ch == '/' && j+1 < len(line) && line[j+1] == '/' {
+				lines[i] = line[:j]
+				break
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // extractFloat finds a key in JSON5 text and returns its numeric value.
