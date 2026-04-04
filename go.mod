@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	fyne.io/fyne/v2 v2.7.3
 	golang.org/x/image v0.38.0
+	gonum.org/v1/plot v0.16.0
 )
 
 require (
@@ -45,6 +46,5 @@ require (
 	golang.org/x/net v0.45.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
-	gonum.org/v1/plot v0.16.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -34,6 +34,7 @@ const (
 	prefWindowHeight = "window_height"
 	prefWindowX      = "window_x"
 	prefWindowY      = "window_y"
+	prefWindowPosSet = "window_pos_set"
 	prefHSplitOffset = "hsplit_offset"
 	prefVSplitOffset = "vsplit_offset"
 
@@ -313,12 +314,9 @@ func Run() {
 			paramsDirty = false
 		}
 		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, showPlotsCheck.Checked, &diffCmd, func() {
-			rotateImages(0)
-			offset := parsePathOffset(pathOffsetEntry.Text)
-			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(appDir, offset)
-			drawPathLine(imagePanel, diffImagePath, offset, edges)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
+			// Display the IOTAdiffraction-produced image with path overlay as-is.
+			appDir, _ := os.Getwd()
+			displayImage(imagePanel, filepath.Join(appDir, "diffractionImageWithPath.png"))
 		})
 	}
 	angleLabel := widget.NewLabel("Angle (deg):")
@@ -326,7 +324,22 @@ func Run() {
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), angleEntry))
 
 	rotateStdBtn := widget.NewButton("Rotate images to standard position", func() {
-		dialog.ShowInformation("Not yet implemented", "This feature is not yet implemented.", w)
+		dx, dy, err := report.ParseShadowVelocity(paramsEntry.Text)
+		if err != nil {
+			dialog.ShowError(fmt.Errorf("cannot compute standard angle: %w", err), w)
+			return
+		}
+		pathAngle := report.PathAngleFromVelocity(dx, dy)
+		stdAngle := pathAngle - 270.0
+		angleEntry.SetText(strconv.FormatFloat(stdAngle, 'f', 2, 64))
+		rotateImages(stdAngle)
+		if diffImagePath != "" {
+			offset := parsePathOffset(pathOffsetEntry.Text)
+			appDir := filepath.Dir(diffImagePath)
+			edges := findEdgesForOffset(appDir, offset)
+			drawPathLine(imagePanel, diffImagePath, offset, edges)
+			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
+		}
 	})
 
 	toolbarRow1 := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, widget.NewSeparator(), runBtn, showPlotsCheck)
@@ -339,11 +352,12 @@ func Run() {
 	restorePreferences(a.Preferences(), w, hSplit, vSplit)
 
 	w.SetContent(container.NewBorder(toolbar, nil, nil, nil, vSplit))
-	w.SetOnClosed(func() {
+	w.SetCloseIntercept(func() {
 		savePreferences(a.Preferences(), w, hSplit, vSplit)
 		if diffCmd != nil && diffCmd.Process != nil {
 			diffCmd.Process.Kill()
 		}
+		w.Close()
 	})
 
 	w.ShowAndRun()
@@ -486,6 +500,7 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 	// IOTAdiffraction has written new ones.
 	outputPath := filepath.Join(appDir, "diffractionImage8bit.png")
 	targetPath := filepath.Join(appDir, "targetImage16bit.png")
+	withPathPath := filepath.Join(appDir, "diffractionImageWithPath.png")
 	var prevModTime time.Time
 	if info, err := os.Stat(outputPath); err == nil {
 		prevModTime = info.ModTime()
@@ -493,6 +508,10 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 	var prevTargetModTime time.Time
 	if info, err := os.Stat(targetPath); err == nil {
 		prevTargetModTime = info.ModTime()
+	}
+	var prevWithPathModTime time.Time
+	if info, err := os.Stat(withPathPath); err == nil {
+		prevWithPathModTime = info.ModTime()
 	}
 
 	go func() {
@@ -515,11 +534,12 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 			return
 		}
 
-		// Poll until both output images are written (mod times change) or
+		// Poll until all output images are written (mod times change) or
 		// the process exits, whichever comes first.
 		diffReady := false
 		targetReady := false
-		for !diffReady || !targetReady {
+		withPathReady := false
+		for !diffReady || !targetReady || !withPathReady {
 			time.Sleep(500 * time.Millisecond)
 			if !diffReady {
 				if info, err := os.Stat(outputPath); err == nil && info.ModTime().After(prevModTime) {
@@ -531,12 +551,17 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 					targetReady = true
 				}
 			}
+			if !withPathReady {
+				if info, err := os.Stat(withPathPath); err == nil && info.ModTime().After(prevWithPathModTime) {
+					withPathReady = true
+				}
+			}
 			// Also stop polling if the process has already exited.
 			if cmd.ProcessState != nil {
 				break
 			}
 		}
-		outputReady := diffReady && targetReady
+		outputReady := diffReady && targetReady && withPathReady
 
 		// Check for early process exit with error (no output produced).
 		if !outputReady {
@@ -631,10 +656,12 @@ func drawPathLine(panel *fyne.Container, imagePath string, offset int, edges []i
 }
 
 // parsePathOffset parses the path offset entry text as an integer,
-// returning 0 for empty or invalid input.
+// returning 0 for empty or invalid input. The sign is negated for
+// internal use so that positive user input moves the path downward
+// in the image coordinate system.
 func parsePathOffset(text string) int {
 	n, _ := strconv.Atoi(text)
-	return n
+	return -n
 }
 
 // parseYMax parses the Y max entry text as a float, returning the
@@ -754,10 +781,10 @@ func restorePreferences(prefs fyne.Preferences, w fyne.Window, hSplit, vSplit *c
 	height := prefs.FloatWithFallback(prefWindowHeight, defaultHeight)
 	w.Resize(fyne.NewSize(float32(width), float32(height)))
 
-	// Restore window position if previously saved (sentinel -1 means not set).
-	x := prefs.IntWithFallback(prefWindowX, -1)
-	y := prefs.IntWithFallback(prefWindowY, -1)
-	if x >= 0 && y >= 0 {
+	// Restore window position if previously saved.
+	x := prefs.Int(prefWindowX)
+	y := prefs.Int(prefWindowY)
+	if prefs.BoolWithFallback(prefWindowPosSet, false) {
 		// Position must be applied after the window is shown, so defer it.
 		// RunNative handles its own thread marshaling — do not wrap in fyne.Do.
 		go func() {
@@ -780,6 +807,7 @@ func savePreferences(prefs fyne.Preferences, w fyne.Window, hSplit, vSplit *cont
 	if x, y, ok := getWindowPosition(w); ok {
 		prefs.SetInt(prefWindowX, x)
 		prefs.SetInt(prefWindowY, y)
+		prefs.SetBool(prefWindowPosSet, true)
 	}
 
 	prefs.SetFloat(prefHSplitOffset, hSplit.Offset)
