@@ -268,9 +268,10 @@ func stripJSON5Comments(text string) string {
 }
 
 // extractFloat finds a key in JSON5 text and returns its numeric value.
+// Comments are stripped first so that commented-out lines are not matched.
 func extractFloat(text, key string) (float64, error) {
 	re := regexp.MustCompile(key + `\s*:\s*([0-9.eE+-]+)`)
-	m := re.FindStringSubmatch(text)
+	m := re.FindStringSubmatch(stripJSON5Comments(text))
 	if m == nil {
 		return 0, fmt.Errorf("%s not found in parameters", key)
 	}

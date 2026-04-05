@@ -143,8 +143,8 @@ func Run() {
 		if diffImagePath != "" {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(appDir, offset)
-			drawPathLine(imagePanel, diffImagePath, offset, edges)
+			edges := findEdgesForOffset(w, appDir, offset)
+			drawPathLine(w, imagePanel, diffImagePath, offset, edges)
 			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
 		}
 	}
@@ -163,7 +163,7 @@ func Run() {
 		if diffImagePath != "" {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(appDir, offset)
+			edges := findEdgesForOffset(w, appDir, offset)
 			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
 		}
 	}
@@ -198,7 +198,7 @@ func Run() {
 		if diffImagePath != "" {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(appDir, offset)
+			edges := findEdgesForOffset(w, appDir, offset)
 			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
 		}
 	}
@@ -227,18 +227,19 @@ func Run() {
 
 		appDir, err := os.Getwd()
 		if err != nil {
+			dialog.ShowError(fmt.Errorf("cannot determine app directory: %w", err), w)
 			return
 		}
 		imgPath := filepath.Join(appDir, "diffractionImage8bit.png")
 		f, err := os.Open(imgPath)
 		if err != nil {
-			fmt.Printf("Cannot open diffractionImage8bit.png: %v\n", err)
+			dialog.ShowError(fmt.Errorf("cannot open diffractionImage8bit.png: %w", err), w)
 			return
 		}
 		src, _, err := image.Decode(f)
 		f.Close()
 		if err != nil {
-			fmt.Printf("Cannot decode diffractionImage8bit.png: %v\n", err)
+			dialog.ShowError(fmt.Errorf("cannot decode diffractionImage8bit.png: %w", err), w)
 			return
 		}
 		gray, ok := src.(*image.Gray)
@@ -250,43 +251,65 @@ func Run() {
 		rotated := report.RotateGrayBilinear(gray, rotAngleRadians, bg)
 
 		outPath := filepath.Join(appDir, "diffractionImage8bitRotated.png")
-		if out, err := os.Create(outPath); err == nil {
-			png.Encode(out, rotated)
+		if out, err := os.Create(outPath); err != nil {
+			dialog.ShowError(fmt.Errorf("cannot create diffractionImage8bitRotated.png: %w", err), w)
+		} else {
+			if err := png.Encode(out, rotated); err != nil {
+				dialog.ShowError(fmt.Errorf("cannot write diffractionImage8bitRotated.png: %w", err), w)
+			}
 			out.Close()
 		}
 
 		// Rotate geometricShadow.png with bg=255.
 		geoPath := filepath.Join(appDir, "geometricShadow.png")
-		if gf, err := os.Open(geoPath); err == nil {
-			if geoSrc, _, err := image.Decode(gf); err == nil {
+		if gf, err := os.Open(geoPath); err != nil {
+			dialog.ShowError(fmt.Errorf("cannot open geometricShadow.png: %w", err), w)
+		} else {
+			geoSrc, _, decErr := image.Decode(gf)
+			gf.Close()
+			if decErr != nil {
+				dialog.ShowError(fmt.Errorf("cannot decode geometricShadow.png: %w", decErr), w)
+			} else {
 				geoGray, ok := geoSrc.(*image.Gray)
 				if !ok {
 					geoGray = report.ToGray(geoSrc)
 				}
 				geoRotated := report.RotateGrayBilinear(geoGray, rotAngleRadians, 255)
-				if out, err := os.Create(filepath.Join(appDir, "geometricShadowRotated.png")); err == nil {
-					png.Encode(out, geoRotated)
+				if out, err := os.Create(filepath.Join(appDir, "geometricShadowRotated.png")); err != nil {
+					dialog.ShowError(fmt.Errorf("cannot create geometricShadowRotated.png: %w", err), w)
+				} else {
+					if err := png.Encode(out, geoRotated); err != nil {
+						dialog.ShowError(fmt.Errorf("cannot write geometricShadowRotated.png: %w", err), w)
+					}
 					out.Close()
 				}
 			}
-			gf.Close()
 		}
 
 		// Rotate targetImage16bit.png with bg=4000.
 		tgtPath := filepath.Join(appDir, "targetImage16bit.png")
-		if tf, err := os.Open(tgtPath); err == nil {
-			if tgtSrc, _, err := image.Decode(tf); err == nil {
+		if tf, err := os.Open(tgtPath); err != nil {
+			dialog.ShowError(fmt.Errorf("cannot open targetImage16bit.png: %w", err), w)
+		} else {
+			tgtSrc, _, decErr := image.Decode(tf)
+			tf.Close()
+			if decErr != nil {
+				dialog.ShowError(fmt.Errorf("cannot decode targetImage16bit.png: %w", decErr), w)
+			} else {
 				tgtGray16, ok := tgtSrc.(*image.Gray16)
 				if !ok {
 					tgtGray16 = report.ToGray16(tgtSrc)
 				}
 				tgtRotated := report.RotateGray16Bilinear(tgtGray16, rotAngleRadians, 4000)
-				if out, err := os.Create(filepath.Join(appDir, "targetImage16bitRotated.png")); err == nil {
-					png.Encode(out, tgtRotated)
+				if out, err := os.Create(filepath.Join(appDir, "targetImage16bitRotated.png")); err != nil {
+					dialog.ShowError(fmt.Errorf("cannot create targetImage16bitRotated.png: %w", err), w)
+				} else {
+					if err := png.Encode(out, tgtRotated); err != nil {
+						dialog.ShowError(fmt.Errorf("cannot write targetImage16bitRotated.png: %w", err), w)
+					}
 					out.Close()
 				}
 			}
-			tf.Close()
 		}
 
 		img := canvas.NewImageFromImage(rotated)
@@ -305,8 +328,8 @@ func Run() {
 		if diffImagePath != "" {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(appDir, offset)
-			drawPathLine(imagePanel, diffImagePath, offset, edges)
+			edges := findEdgesForOffset(w, appDir, offset)
+			drawPathLine(w, imagePanel, diffImagePath, offset, edges)
 			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
 		}
 	}
@@ -322,8 +345,12 @@ func Run() {
 		}
 		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, showPlotsCheck.Checked, &diffCmd, func() {
 			// Display the IOTAdiffraction-produced image with path overlay as-is.
-			appDir, _ := os.Getwd()
-			displayImage(imagePanel, filepath.Join(appDir, "diffractionImageWithPath.png"))
+			appDir, err := os.Getwd()
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("cannot determine app directory: %w", err), w)
+				return
+			}
+			displayImage(w, imagePanel, filepath.Join(appDir, "diffractionImageWithPath.png"))
 			dialog.ShowInformation("Rotate images",
 				"The righthand plot shows the actual Fundamental plane with its observation path.\n\n"+
 					"It is more convenient to rotate images so that for this tool, the observation paths are horizontal "+
@@ -348,8 +375,8 @@ func Run() {
 		if diffImagePath != "" {
 			offset := parsePathOffset(pathOffsetEntry.Text)
 			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(appDir, offset)
-			drawPathLine(imagePanel, diffImagePath, offset, edges)
+			edges := findEdgesForOffset(w, appDir, offset)
+			drawPathLine(w, imagePanel, diffImagePath, offset, edges)
 			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
 		}
 	})
@@ -598,7 +625,7 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 			btn.Enable()
 			status.SetText("Completed")
 			*diffImagePath = outputPath
-			displayImage(imagePanel, *diffImagePath)
+			displayImage(w, imagePanel, *diffImagePath)
 			onImageReady()
 		})
 
@@ -612,14 +639,16 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 // the given path, scaled to fill the available space. The file is fully
 // decoded into memory before handing it to Fyne so that a partially-written
 // file does not cause a render error.
-func displayImage(panel *fyne.Container, path string) {
+func displayImage(w fyne.Window, panel *fyne.Container, path string) {
 	f, err := os.Open(path)
 	if err != nil {
+		dialog.ShowError(fmt.Errorf("cannot open image %s: %w", filepath.Base(path), err), w)
 		return
 	}
 	src, _, err := image.Decode(f)
 	f.Close()
 	if err != nil {
+		dialog.ShowError(fmt.Errorf("cannot decode image %s: %w", filepath.Base(path), err), w)
 		return
 	}
 	img := canvas.NewImageFromImage(src)
@@ -632,15 +661,17 @@ func displayImage(panel *fyne.Container, path string) {
 // drawPathLine loads the image at imagePath, draws a 4-pixel wide red
 // horizontal line at the vertical center plus offset rows, draws green
 // vertical lines at edge positions, and displays the result in the panel.
-func drawPathLine(panel *fyne.Container, imagePath string, offset int, edges []int) {
+func drawPathLine(w fyne.Window, panel *fyne.Container, imagePath string, offset int, edges []int) {
 	rotatedPath := filepath.Join(filepath.Dir(imagePath), "diffractionImage8bitRotated.png")
 	f, err := os.Open(rotatedPath)
 	if err != nil {
+		dialog.ShowError(fmt.Errorf("cannot open rotated image: %w", err), w)
 		return
 	}
 	src, _, err := image.Decode(f)
 	f.Close()
 	if err != nil {
+		dialog.ShowError(fmt.Errorf("cannot decode rotated image: %w", err), w)
 		return
 	}
 
@@ -719,9 +750,12 @@ func calcExposurePixels(paramsText, exposureText string, kmPerPx float64) int {
 
 // findEdgesForOffset returns the geometric shadow edge positions for the
 // given path offset, or nil if the shadow image cannot be read.
-func findEdgesForOffset(appDir string, offset int) []int {
+func findEdgesForOffset(w fyne.Window, appDir string, offset int) []int {
 	shadowPath := filepath.Join(appDir, "geometricShadowRotated.png")
-	edges, _ := report.FindEdges(shadowPath, offset)
+	edges, err := report.FindEdges(shadowPath, offset)
+	if err != nil {
+		dialog.ShowError(fmt.Errorf("cannot find edges: %w", err), w)
+	}
 	return edges
 }
 
