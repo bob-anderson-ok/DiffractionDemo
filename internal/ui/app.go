@@ -535,6 +535,10 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 	btn.Disable()
 	status.SetText("Running IOTAdiffraction...")
 
+	// Delete any previous error log before launching.
+	errLogPath := filepath.Join(appDir, "IOTAdiffractionError.log")
+	os.Remove(errLogPath)
+
 	progress := widget.NewProgressBarInfinite()
 	dlg := dialog.NewCustomWithoutButtons("Running IOTAdiffraction...", progress, w)
 	dlg.Show()
@@ -577,13 +581,21 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 			return
 		}
 
-		// Poll until all output images are written (mod times change) or
-		// the process exits, whichever comes first.
+		// Poll until all output images are written (mod times change),
+		// an error log appears, or the process exits.
 		diffReady := false
 		targetReady := false
 		withPathReady := false
+		fatalError := false
 		for !diffReady || !targetReady || !withPathReady {
 			time.Sleep(500 * time.Millisecond)
+
+			// Check for fatal error log from IOTAdiffraction.
+			if _, statErr := os.Stat(errLogPath); statErr == nil {
+				fatalError = true
+				break
+			}
+
 			if !diffReady {
 				if info, err := os.Stat(outputPath); err == nil && info.ModTime().After(prevModTime) {
 					diffReady = true
@@ -604,6 +616,26 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 				break
 			}
 		}
+
+		// If IOTAdiffraction wrote an error log, show its contents and abort.
+		if fatalError {
+			errContents, readErr := os.ReadFile(errLogPath)
+			errMsg := string(errContents)
+			if readErr != nil {
+				errMsg = fmt.Sprintf("IOTAdiffraction reported an error (could not read log: %v)", readErr)
+			}
+			cmd.Wait()
+			*diffCmd = nil
+			fyne.Do(func() {
+				dlg.Hide()
+				progress.Stop()
+				btn.Enable()
+				status.SetText("Failed")
+				dialog.ShowError(fmt.Errorf("%s", errMsg), w)
+			})
+			return
+		}
+
 		outputReady := diffReady && targetReady && withPathReady
 
 		// Check for early process exit with error (no output produced).
