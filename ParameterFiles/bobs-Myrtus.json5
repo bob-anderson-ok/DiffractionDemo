@@ -4,19 +4,19 @@
   fundamental_plane_width_num_points : 2000,  // Required, but overridden if an external image is supplied
   // parallax_arcsec : 3.7711,
   distance_au : 2.33,
-  path_to_qe_table_file : "CAMEERA-QE\\qhy174QE_every_20nm.qe",  // Optional.
+  path_to_qe_table_file : "CAMERA-QE\\qhy174QE_every_20nm.qe",  // Optional.
   observation_wavelength_nm : 500,  // Required to be present, even if a QE table is provided.
-  dX_km_per_sec : 5.074, 
   
-  // dY_km_per_sec : -0.904,
-  dY_km_per_sec: 0.0,
-  path_perpendicular_offset_from_center_km : -1.18, 
-  percent_mag_drop : 100, 
-  // star_diam_on_plane_mas: 2.15,  // Optional. If omitted, 0.0 is used (i.e., no finite star calculation)
-  limb_darkening_coeff: 0.7,
-  star_class : "K",
+  dX_km_per_sec : 5.074, 
+  dY_km_per_sec : -0.904,
 
-  Xmain_body : {  
+ 
+  // percent_mag_drop : 100, 
+  // star_diam_on_plane_mas: 1.0,  // Optional. If omitted, 0.0 is used (i.e., no finite star calculation)
+  // limb_darkening_coeff: 0.7,
+  // star_class : "K",
+
+  Xmain_body : {          // Adding the X to main_body hides this section conveniently
     x_center_km : 5.8,
     y_center_km : 0.6,
     major_axis_km : 17.6,
@@ -24,7 +24,7 @@
     major_axis_pa_degrees : 98.3,
   },
 
-  Xsatellite : { 
+  satellite : { 
     x_center_km : -5.8,
     y_center_km : -0.6,
     major_axis_km : 7.5,
@@ -32,5 +32,4 @@
     major_axis_pa_degrees : 94.0,
   },
  path_to_external_image : "11293_2.png",
- // external_image_width_km : 180,
 }

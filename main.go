@@ -4,6 +4,9 @@ package main
 
 import "DiffractionDemo/internal/ui"
 
+const VERSION = "1.0.1"
+
 func main() {
+	ui.Version = VERSION
 	ui.Run()
 }

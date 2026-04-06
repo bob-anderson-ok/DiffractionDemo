@@ -27,6 +27,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
+// Version is set by main before calling Run.
+var Version string
+
 const (
 	appID = "com.iota.diffractiondemo"
 
@@ -69,7 +72,7 @@ func (e *focusLostEntry) FocusLost() {
 // Run creates the application window and enters the Fyne event loop.
 func Run() {
 	a := app.NewWithID(appID)
-	w := a.NewWindow("DiffractionDemo")
+	w := a.NewWindow("DiffractionDemo " + Version)
 
 	paramsEntry, paramsScroll := buildParamsPanel("Open a parameters file to view its contents...")
 	imagePanel := buildImagePanel("No image loaded — run diffraction to generate one.")
@@ -112,7 +115,7 @@ func Run() {
 	saveAsBtn.Importance = widget.SuccessImportance
 
 	pathOffsetEntry := newFocusLostEntry()
-	pathOffsetEntry.SetPlaceHolder("0")
+	pathOffsetEntry.SetText("0")
 	pathOffsetEntry.OnChanged = func(text string) {
 		if text == "" || text == "-" {
 			return
@@ -120,6 +123,15 @@ func Run() {
 		if _, err := strconv.Atoi(text); err != nil {
 			// Strip the last character that made it invalid.
 			pathOffsetEntry.SetText(text[:len(text)-1])
+		}
+	}
+	// stepPathOffset increments the current value by delta and triggers the
+	// same update logic as losing focus on the entry.
+	stepPathOffset := func(delta int) {
+		cur, _ := strconv.Atoi(pathOffsetEntry.Text)
+		pathOffsetEntry.SetText(strconv.Itoa(cur + delta))
+		if pathOffsetEntry.OnFocusLost != nil {
+			pathOffsetEntry.OnFocusLost()
 		}
 	}
 	// kmPerPixel returns the pixel-to-km scale from the current parameters,
@@ -173,12 +185,15 @@ func Run() {
 	statusLabel := widget.NewLabel("")
 	pathOffsetLabel := widget.NewLabel("Path offset from center (rows):")
 	entryMinSize := pathOffsetEntry.MinSize()
+	decBtn := widget.NewButton("-", func() { stepPathOffset(-1) })
+	incBtn := widget.NewButton("+", func() { stepPathOffset(1) })
+	spinnerEntry := container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), pathOffsetEntry)
+	pathOffsetSpinner := container.NewHBox(decBtn, spinnerEntry, incBtn)
 	// Preallocate space for the km label so it doesn't push adjacent widgets.
 	pathOffsetKmLabel.SetText("                              ")
 	kmLabelMinSize := pathOffsetKmLabel.MinSize()
 	pathOffsetKmLabel.SetText("")
-	pathOffsetBox := container.NewHBox(pathOffsetLabel,
-		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), pathOffsetEntry),
+	pathOffsetBox := container.NewHBox(pathOffsetLabel, pathOffsetSpinner,
 		container.NewGridWrap(kmLabelMinSize, pathOffsetKmLabel))
 	yMaxLabel := widget.NewLabel("Y max:")
 	yMaxBox := container.NewHBox(yMaxLabel,
@@ -343,6 +358,15 @@ func Run() {
 			dialog.ShowError(fmt.Errorf("parameter file error:\n%s", err), w)
 			return
 		}
+		// Clear any previous light curve plot and image from an earlier run.
+		lightCurvePanel.Objects = []fyne.CanvasObject{
+			container.NewCenter(widget.NewLabel("No light curve — run diffraction to generate one.")),
+		}
+		lightCurvePanel.Refresh()
+		imagePanel.Objects = []fyne.CanvasObject{
+			container.NewCenter(widget.NewLabel("No image loaded — run diffraction to generate one.")),
+		}
+		imagePanel.Refresh()
 		runDiffraction(w, runBtn, statusLabel, paramsFilePath, imagePanel, &diffImagePath, showPlotsCheck.Checked, &diffCmd, func() {
 			// Display the IOTAdiffraction-produced image with path overlay as-is.
 			appDir, err := os.Getwd()
@@ -358,10 +382,6 @@ func Run() {
 					"You will need to click the Rotate button to cause this to happen.", w)
 		})
 	}
-	angleLabel := widget.NewLabel("Angle (deg):")
-	angleBox := container.NewHBox(angleLabel,
-		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), angleEntry))
-
 	rotateStdBtn := widget.NewButton("Rotate so path is horizontal left to right", func() {
 		dx, dy, err := report.ParseShadowVelocity(paramsEntry.Text)
 		if err != nil {
@@ -383,7 +403,7 @@ func Run() {
 	rotateStdBtn.Importance = widget.HighImportance
 
 	toolbarRow1 := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, widget.NewSeparator(), runBtn, showPlotsCheck)
-	toolbarRow2 := container.NewHBox(pathOffsetBox, exposureBox, angleBox, rotateStdBtn)
+	toolbarRow2 := container.NewHBox(pathOffsetBox, exposureBox, rotateStdBtn)
 	toolbar := container.NewVBox(toolbarRow1, toolbarRow2)
 	hSplit := container.NewHSplit(paramsScroll, imagePanel)
 	lightCurveWithYMax := container.NewBorder(nil, nil, yMaxBox, nil, lightCurvePanel)
@@ -462,7 +482,7 @@ func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, p
 			runBtn.Enable()
 		}
 
-		w.SetTitle("DiffractionDemo — " + filePath)
+		w.SetTitle("DiffractionDemo " + Version + " — " + filePath)
 	}, w)
 	fd.SetFilter(storage.NewExtensionFileFilter([]string{".json", ".json5"}))
 	fd.Resize(fyne.NewSize(800, 600))
@@ -597,17 +617,17 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 			}
 
 			if !diffReady {
-				if info, err := os.Stat(outputPath); err == nil && info.ModTime().After(prevModTime) {
+				if info, err := os.Stat(outputPath); err == nil && info.ModTime().After(prevModTime) && pngFullyReadable(outputPath) {
 					diffReady = true
 				}
 			}
 			if !targetReady {
-				if info, err := os.Stat(targetPath); err == nil && info.ModTime().After(prevTargetModTime) {
+				if info, err := os.Stat(targetPath); err == nil && info.ModTime().After(prevTargetModTime) && pngFullyReadable(targetPath) {
 					targetReady = true
 				}
 			}
 			if !withPathReady {
-				if info, err := os.Stat(withPathPath); err == nil && info.ModTime().After(prevWithPathModTime) {
+				if info, err := os.Stat(withPathPath); err == nil && info.ModTime().After(prevWithPathModTime) && pngFullyReadable(withPathPath) {
 					withPathReady = true
 				}
 			}
@@ -665,6 +685,19 @@ func runDiffraction(w fyne.Window, btn *widget.Button, status *widget.Label, par
 		cmd.Wait()
 		*diffCmd = nil
 	}()
+}
+
+// pngFullyReadable returns true if the file at path can be opened and fully
+// decoded as a PNG. This guards against reading a file that is still being
+// written by an external process.
+func pngFullyReadable(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	_, err = png.Decode(f)
+	return err == nil
 }
 
 // displayImage replaces the contents of a panel container with the image at
