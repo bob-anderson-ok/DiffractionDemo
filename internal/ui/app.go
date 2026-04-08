@@ -17,13 +17,13 @@ import (
 	"strings"
 	"time"
 
-	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/storage"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -74,7 +74,7 @@ func Run() {
 	a := app.NewWithID(appID)
 	w := a.NewWindow("DiffractionDemo " + Version)
 
-	paramsEntry, paramsScroll := buildParamsPanel("Open a parameters file to view its contents...")
+	paramsEntry, paramsScroll := buildParamsPanel(a, "Open a parameters file to view its contents...")
 	imagePanel := buildImagePanel("No image loaded — run diffraction to generate one.")
 	lightCurvePanel := buildImagePanel("No light curve — run diffraction to generate one.")
 
@@ -84,7 +84,12 @@ func Run() {
 	var paramsDirty bool
 	var yMaxEntry *focusLostEntry
 	var exposureEntry *focusLostEntry
+	var exposure2Entry *focusLostEntry
+	var pathOffset2Entry *focusLostEntry
 	var diffCmd *exec.Cmd
+	var view1Check, view2Check *widget.Check
+	var edges1Check, edges2Check *widget.Check
+	var darkModeCheck *widget.Check
 
 	paramsEntry.OnChanged = func(_ string) {
 		paramsDirty = true
@@ -141,9 +146,117 @@ func Run() {
 		return scale
 	}
 
-	// exposurePixels returns the camera exposure time in pixels.
+	// exposurePixels returns the camera exposure time in pixels for path 1.
 	exposurePixels := func() int {
 		return calcExposurePixels(paramsEntry.Text, exposureEntry.Text, kmPerPixel())
+	}
+	// exposurePixels2 returns the camera exposure time in pixels for path 2.
+	exposurePixels2 := func() int {
+		return calcExposurePixels(paramsEntry.Text, exposure2Entry.Text, kmPerPixel())
+	}
+
+	// refreshImage redraws the upper-right diffraction image with path
+	// overlay lines for both paths (when their View checkbox is checked).
+	refreshImage := func() {
+		if diffImagePath == "" {
+			return
+		}
+		appDir := filepath.Dir(diffImagePath)
+		var paths []pathOverlay
+		if view1Check != nil && view1Check.Checked {
+			offset := parsePathOffset(pathOffsetEntry.Text)
+			edges := findEdgesForOffset(w, appDir, offset)
+			paths = append(paths, pathOverlay{
+				offset:    offset,
+				edges:     edges,
+				lineColor: color.RGBA{R: 255, A: 255},
+			})
+		}
+		if view2Check != nil && view2Check.Checked {
+			offset2 := parsePathOffset(pathOffset2Entry.Text)
+			edges2 := findEdgesForOffset(w, appDir, offset2)
+			paths = append(paths, pathOverlay{
+				offset:    offset2,
+				edges:     edges2,
+				lineColor: color.RGBA{R: 255, G: 128, A: 255},
+			})
+		}
+		if len(paths) == 0 {
+			// No paths to show — just display the base rotated image.
+			displayImage(w, imagePanel, filepath.Join(appDir, "diffractionImage8bitRotated.png"))
+			return
+		}
+		drawPathLines(w, imagePanel, diffImagePath, paths)
+	}
+
+	// refreshPlot redraws the light curve panel based on which View
+	// checkboxes are checked, overlaying both curves when both are active.
+	refreshPlot := func() {
+		if diffImagePath == "" {
+			return
+		}
+		appDir := filepath.Dir(diffImagePath)
+		scale := kmPerPixel()
+		yMax := parseYMax(yMaxEntry.Text)
+
+		var curves []report.CurveData
+		if view1Check != nil && view1Check.Checked {
+			offset := parsePathOffset(pathOffsetEntry.Text)
+			edges := findEdgesForOffset(w, appDir, offset)
+			targetPath := filepath.Join(appDir, "targetImage16bitRotated.png")
+			values, err := report.ExtractRow(targetPath, offset)
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("cannot extract light curve: %w", err), w)
+				return
+			}
+			cd := report.CurveData{
+				Values:          values,
+				CurveColor:      color.RGBA{B: 255, A: 255},
+				IntegratedColor: color.RGBA{G: 180, A: 255},
+			}
+			if edges1Check != nil && edges1Check.Checked {
+				cd.Edges = edges
+			}
+			if ep := exposurePixels(); ep > 1 {
+				cd.Integrated = report.ApplyExposure(values, ep)
+				cd.Values = nil // show only the camera curve
+			}
+			curves = append(curves, cd)
+		}
+		if view2Check != nil && view2Check.Checked {
+			offset2 := parsePathOffset(pathOffset2Entry.Text)
+			edges2 := findEdgesForOffset(w, appDir, offset2)
+			targetPath := filepath.Join(appDir, "targetImage16bitRotated.png")
+			values2, err := report.ExtractRow(targetPath, offset2)
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("cannot extract light curve (path 2): %w", err), w)
+				return
+			}
+			cd2 := report.CurveData{
+				Values:          values2,
+				CurveColor:      color.RGBA{R: 255, G: 128, A: 255},
+				IntegratedColor: color.RGBA{R: 200, G: 100, B: 50, A: 255},
+			}
+			if edges2Check != nil && edges2Check.Checked {
+				cd2.Edges = edges2
+			}
+			if ep2 := exposurePixels2(); ep2 > 1 {
+				cd2.Integrated = report.ApplyExposure(values2, ep2)
+				cd2.Values = nil // show only the camera curve
+			}
+			curves = append(curves, cd2)
+		}
+		if len(curves) == 0 {
+			lightCurvePanel.Objects = nil
+			lightCurvePanel.Refresh()
+			return
+		}
+		plotImg := report.PlotLightCurves(curves, 1200, 400, yMax, scale)
+		img := canvas.NewImageFromImage(plotImg)
+		img.FillMode = canvas.ImageFillContain
+		lightCurvePanel.Layout = layout.NewStackLayout()
+		lightCurvePanel.Objects = []fyne.CanvasObject{img}
+		lightCurvePanel.Refresh()
 	}
 
 	pathOffsetKmLabel := widget.NewLabel("")
@@ -152,13 +265,8 @@ func Run() {
 			offsetKm := float64(-parsePathOffset(pathOffsetEntry.Text)) * scale
 			pathOffsetKmLabel.SetText(fmt.Sprintf("(%.3f km)", offsetKm))
 		}
-		if diffImagePath != "" {
-			offset := parsePathOffset(pathOffsetEntry.Text)
-			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(w, appDir, offset)
-			drawPathLine(w, imagePanel, diffImagePath, offset, edges)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
-		}
+		refreshImage()
+		refreshPlot()
 	}
 
 	yMaxEntry = newFocusLostEntry()
@@ -172,18 +280,13 @@ func Run() {
 		}
 	}
 	yMaxEntry.OnFocusLost = func() {
-		if diffImagePath != "" {
-			offset := parsePathOffset(pathOffsetEntry.Text)
-			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(w, appDir, offset)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
-		}
+		refreshPlot()
 	}
 
 	showPlotsCheck := widget.NewCheck("Show IOTAdiffraction plots", nil)
 
 	statusLabel := widget.NewLabel("")
-	pathOffsetLabel := widget.NewLabel("Path offset from center (rows):")
+	pathOffsetLabel := widget.NewLabel("Path 1 offset (rows):")
 	entryMinSize := pathOffsetEntry.MinSize()
 	decBtn := widget.NewButton("-", func() { stepPathOffset(-1) })
 	incBtn := widget.NewButton("+", func() { stepPathOffset(1) })
@@ -195,6 +298,44 @@ func Run() {
 	pathOffsetKmLabel.SetText("")
 	pathOffsetBox := container.NewHBox(pathOffsetLabel, pathOffsetSpinner,
 		container.NewGridWrap(kmLabelMinSize, pathOffsetKmLabel))
+
+	// Second path offset spinner.
+	pathOffset2Entry = newFocusLostEntry()
+	pathOffset2Entry.SetText("0")
+	pathOffset2Entry.OnChanged = func(text string) {
+		if text == "" || text == "-" {
+			return
+		}
+		if _, err := strconv.Atoi(text); err != nil {
+			pathOffset2Entry.SetText(text[:len(text)-1])
+		}
+	}
+	stepPathOffset2 := func(delta int) {
+		cur, _ := strconv.Atoi(pathOffset2Entry.Text)
+		pathOffset2Entry.SetText(strconv.Itoa(cur + delta))
+		if pathOffset2Entry.OnFocusLost != nil {
+			pathOffset2Entry.OnFocusLost()
+		}
+	}
+	pathOffset2KmLabel := widget.NewLabel("")
+	pathOffset2Entry.OnFocusLost = func() {
+		if scale := kmPerPixel(); scale > 0 {
+			offsetKm := float64(-parsePathOffset(pathOffset2Entry.Text)) * scale
+			pathOffset2KmLabel.SetText(fmt.Sprintf("(%.3f km)", offsetKm))
+		}
+		refreshImage()
+		refreshPlot()
+	}
+	pathOffset2Label := widget.NewLabel("Path 2 offset (rows):")
+	dec2Btn := widget.NewButton("-", func() { stepPathOffset2(-1) })
+	inc2Btn := widget.NewButton("+", func() { stepPathOffset2(1) })
+	spinner2Entry := container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), pathOffset2Entry)
+	pathOffset2Spinner := container.NewHBox(dec2Btn, spinner2Entry, inc2Btn)
+	pathOffset2KmLabel.SetText("                              ")
+	km2LabelMinSize := pathOffset2KmLabel.MinSize()
+	pathOffset2KmLabel.SetText("")
+	pathOffset2Box := container.NewHBox(pathOffset2Label, pathOffset2Spinner,
+		container.NewGridWrap(km2LabelMinSize, pathOffset2KmLabel))
 	yMaxLabel := widget.NewLabel("Y max:")
 	yMaxBox := container.NewHBox(yMaxLabel,
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), yMaxEntry))
@@ -210,16 +351,36 @@ func Run() {
 		}
 	}
 	exposureEntry.OnFocusLost = func() {
-		if diffImagePath != "" {
-			offset := parsePathOffset(pathOffsetEntry.Text)
-			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(w, appDir, offset)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
-		}
+		refreshPlot()
 	}
-	exposureLabel := widget.NewLabel("Camera exposure (secs):")
+	exposureLabel := widget.NewLabel("Exposure 1 (secs):")
 	exposureBox := container.NewHBox(exposureLabel,
 		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), exposureEntry))
+
+	exposure2Entry = newFocusLostEntry()
+	exposure2Entry.SetText("0")
+	exposure2Entry.OnChanged = func(text string) {
+		if text == "" || text == "." {
+			return
+		}
+		if _, err := strconv.ParseFloat(text, 64); err != nil {
+			exposure2Entry.SetText(text[:len(text)-1])
+		}
+	}
+	exposure2Entry.OnFocusLost = func() {
+		refreshPlot()
+	}
+	exposure2Label := widget.NewLabel("Exposure 2 (secs):")
+	exposure2Box := container.NewHBox(exposure2Label,
+		container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), exposure2Entry))
+
+	view1Check = widget.NewCheck("View", func(_ bool) { refreshImage(); refreshPlot() })
+	view1Check.SetChecked(true)
+	edges1Check = widget.NewCheck("Show edges", func(_ bool) { refreshPlot() })
+	edges1Check.SetChecked(true)
+	view2Check = widget.NewCheck("View", func(_ bool) { refreshImage(); refreshPlot() })
+	edges2Check = widget.NewCheck("Show edges", func(_ bool) { refreshPlot() })
+	edges2Check.SetChecked(true)
 
 	angleEntry := newFocusLostEntry()
 	angleEntry.SetText("0")
@@ -341,11 +502,8 @@ func Run() {
 		}
 		rotateImages(deg)
 		if diffImagePath != "" {
-			offset := parsePathOffset(pathOffsetEntry.Text)
-			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(w, appDir, offset)
-			drawPathLine(w, imagePanel, diffImagePath, offset, edges)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
+			refreshImage()
+			refreshPlot()
 		}
 	}
 
@@ -375,39 +533,47 @@ func Run() {
 				return
 			}
 			displayImage(w, imagePanel, filepath.Join(appDir, "diffractionImageWithPath.png"))
-			dialog.ShowInformation("Rotate images",
-				"The righthand plot shows the actual Fundamental plane with its observation path.\n\n"+
-					"It is more convenient to rotate images so that for this tool, the observation paths are horizontal "+
-					"and the star is moving left to right.\n\n"+
-					"You will need to click the Rotate button to cause this to happen.", w)
+			// Automatically rotate so path is horizontal left-to-right.
+			dx, dy, rotErr := report.ParseShadowVelocity(paramsEntry.Text)
+			if rotErr != nil {
+				dialog.ShowError(fmt.Errorf("cannot compute standard angle: %w", rotErr), w)
+				return
+			}
+			pathAngle := report.PathAngleFromVelocity(dx, dy)
+			stdAngle := pathAngle - 270.0
+			angleEntry.SetText(strconv.FormatFloat(stdAngle, 'f', 2, 64))
+			rotateImages(stdAngle)
+			if diffImagePath != "" {
+				refreshImage()
+				refreshPlot()
+			}
+			dialog.ShowInformation("IOTAdiffraction complete",
+				"Images have been rotated so that the observation path is horizontal (left to right).\n\n"+
+					"The light curve has been extracted and plotted.", w)
 		})
 	}
-	rotateStdBtn := widget.NewButton("Rotate so path is horizontal left to right", func() {
-		dx, dy, err := report.ParseShadowVelocity(paramsEntry.Text)
-		if err != nil {
-			dialog.ShowError(fmt.Errorf("cannot compute standard angle: %w", err), w)
-			return
+	leftPanelBg := canvas.NewRectangle(color.Transparent)
+	darkModeCheck = widget.NewCheck("Dark mode", func(checked bool) {
+		if checked {
+			leftPanelBg.FillColor = color.RGBA{R: 30, G: 30, B: 30, A: 255}
+		} else {
+			leftPanelBg.FillColor = color.Transparent
 		}
-		pathAngle := report.PathAngleFromVelocity(dx, dy)
-		stdAngle := pathAngle - 270.0
-		angleEntry.SetText(strconv.FormatFloat(stdAngle, 'f', 2, 64))
-		rotateImages(stdAngle)
-		if diffImagePath != "" {
-			offset := parsePathOffset(pathOffsetEntry.Text)
-			appDir := filepath.Dir(diffImagePath)
-			edges := findEdgesForOffset(w, appDir, offset)
-			drawPathLine(w, imagePanel, diffImagePath, offset, edges)
-			plotRowLightCurve(w, lightCurvePanel, appDir, offset, edges, parseYMax(yMaxEntry.Text), kmPerPixel(), exposurePixels())
-		}
+		leftPanelBg.Refresh()
 	})
-	rotateStdBtn.Importance = widget.HighImportance
-
 	toolbarRow1 := container.NewHBox(openBtn, saveFileBtn, saveAsBtn, widget.NewSeparator(), runBtn, showPlotsCheck)
-	toolbarRow2 := container.NewHBox(pathOffsetBox, exposureBox, rotateStdBtn)
-	toolbar := container.NewVBox(toolbarRow1, toolbarRow2)
+	toolbar := container.NewVBox(toolbarRow1)
 	hSplit := container.NewHSplit(paramsScroll, imagePanel)
-	lightCurveWithYMax := container.NewBorder(nil, nil, yMaxBox, nil, lightCurvePanel)
-	vSplit := container.NewVSplit(hSplit, lightCurveWithYMax)
+	lightCurveLeftContent := container.NewVBox(
+		yMaxBox, widget.NewSeparator(),
+		container.NewHBox(view1Check, edges1Check), pathOffsetBox, exposureBox, widget.NewSeparator(),
+		container.NewHBox(view2Check, edges2Check), pathOffset2Box, exposure2Box,
+		widget.NewSeparator(),
+		darkModeCheck,
+	)
+	lightCurveLeftPanel := container.NewStack(leftPanelBg, lightCurveLeftContent)
+	lightCurveWithControls := container.NewBorder(nil, nil, lightCurveLeftPanel, nil, lightCurvePanel)
+	vSplit := container.NewVSplit(hSplit, lightCurveWithControls)
 
 	restorePreferences(a.Preferences(), w, hSplit, vSplit)
 
@@ -423,14 +589,28 @@ func Run() {
 	w.ShowAndRun()
 }
 
+// bigFontTheme wraps the default theme, increasing the text size by 50%.
+type bigFontTheme struct {
+	fyne.Theme
+}
+
+func (t *bigFontTheme) Size(name fyne.ThemeSizeName) float32 {
+	if name == theme.SizeNameText {
+		return t.Theme.Size(name) * 1.5
+	}
+	return t.Theme.Size(name)
+}
+
 // buildParamsPanel creates an editable multiline text area with a horizontal
-// scroll container. Returns both the entry (for accessing text) and the
-// scroll container (for layout).
-func buildParamsPanel(placeholder string) (*widget.Entry, *container.Scroll) {
+// scroll container and enlarged font. Returns the entry (for accessing text)
+// and a themed container (for layout).
+func buildParamsPanel(a fyne.App, placeholder string) (*widget.Entry, fyne.CanvasObject) {
 	entry := widget.NewMultiLineEntry()
+	entry.TextStyle = fyne.TextStyle{Monospace: true}
 	entry.SetPlaceHolder(placeholder)
 	scroll := container.NewHScroll(entry)
-	return entry, scroll
+	themed := container.NewThemeOverride(scroll, &bigFontTheme{Theme: a.Settings().Theme()})
+	return entry, themed
 }
 
 // buildImagePanel creates a panel with a centered placeholder label, suitable
@@ -466,7 +646,9 @@ func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, p
 			dialog.ShowError(readErr, w)
 			return
 		}
-		entry.SetText(string(data))
+		// Normalize line endings so the editor always works with
+		// consistent text and re-saves will produce valid CRLF files.
+		entry.SetText(ensureCRLF(string(data)))
 		*dirty = false
 		saveAsBtn.Enable()
 
@@ -489,10 +671,19 @@ func openParametersFile(w fyne.Window, entry *widget.Entry, sourceDir *string, p
 	fd.Show()
 }
 
+// ensureCRLF normalises line endings to CRLF. It first strips any existing
+// CR characters so that mixed or pure-CR files are handled, then inserts
+// CR before every LF.
+func ensureCRLF(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return strings.ReplaceAll(s, "\n", "\r\n")
+}
+
 // saveParameters writes the current editor contents back to the originally
-// opened parameters file.
+// opened parameters file, ensuring CRLF line endings.
 func saveParameters(w fyne.Window, entry *widget.Entry, paramsFile string) {
-	if err := os.WriteFile(paramsFile, []byte(entry.Text), 0644); err != nil {
+	if err := os.WriteFile(paramsFile, []byte(ensureCRLF(entry.Text)), 0644); err != nil {
 		dialog.ShowError(err, w)
 	}
 }
@@ -519,7 +710,7 @@ func saveParametersAs(w fyne.Window, entry *widget.Entry, sourceDir string) {
 		}
 		baseName := strings.TrimSuffix(nameEntry.Text, filepath.Ext(nameEntry.Text))
 		savePath := filepath.Join(sourceDir, baseName+".json5")
-		if err := os.WriteFile(savePath, []byte(entry.Text), 0644); err != nil {
+		if err := os.WriteFile(savePath, []byte(ensureCRLF(entry.Text)), 0644); err != nil {
 			dialog.ShowError(err, w)
 			return
 		}
@@ -723,10 +914,16 @@ func displayImage(w fyne.Window, panel *fyne.Container, path string) {
 	panel.Refresh()
 }
 
-// drawPathLine loads the image at imagePath, draws a 4-pixel wide red
-// horizontal line at the vertical center plus offset rows, draws green
-// vertical lines at edge positions, and displays the result in the panel.
-func drawPathLine(w fyne.Window, panel *fyne.Container, imagePath string, offset int, edges []int) {
+// pathOverlay holds the offset and edge data for one observation path.
+type pathOverlay struct {
+	offset    int
+	edges     []int
+	lineColor color.RGBA
+}
+
+// drawPathLines loads the rotated diffraction image, draws horizontal path
+// lines and vertical edge markers for each overlay, and displays the result.
+func drawPathLines(w fyne.Window, panel *fyne.Container, imagePath string, paths []pathOverlay) {
 	rotatedPath := filepath.Join(filepath.Dir(imagePath), "diffractionImage8bitRotated.png")
 	f, err := os.Open(rotatedPath)
 	if err != nil {
@@ -744,29 +941,30 @@ func drawPathLine(w fyne.Window, panel *fyne.Container, imagePath string, offset
 	dst := image.NewRGBA(bounds)
 	draw.Draw(dst, bounds, src, bounds.Min, draw.Src)
 
-	// Draw observation path as a 4-pixel red horizontal line.
-	lineY := bounds.Min.Y + bounds.Dy()/2 + offset
-	red := color.RGBA{R: 255, A: 255}
-	for dy := 0; dy < 4; dy++ {
-		y := lineY + dy
-		if y < bounds.Min.Y || y >= bounds.Max.Y {
-			continue
-		}
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			dst.Set(x, y, red)
-		}
-	}
-
-	// Draw edge positions as full-height green vertical lines, 3 pixels wide.
 	green := color.RGBA{G: 255, A: 255}
-	for _, ex := range edges {
-		for dx := -1; dx <= 1; dx++ {
-			px := ex + dx
-			if px < bounds.Min.X || px >= bounds.Max.X {
+	for _, po := range paths {
+		// Draw observation path as a 4-pixel horizontal line.
+		lineY := bounds.Min.Y + bounds.Dy()/2 + po.offset
+		for dy := 0; dy < 4; dy++ {
+			y := lineY + dy
+			if y < bounds.Min.Y || y >= bounds.Max.Y {
 				continue
 			}
-			for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-				dst.Set(px, y, green)
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				dst.Set(x, y, po.lineColor)
+			}
+		}
+
+		// Draw edge positions as full-height green vertical lines, 3 pixels wide.
+		for _, ex := range po.edges {
+			for dx := -1; dx <= 1; dx++ {
+				px := ex + dx
+				if px < bounds.Min.X || px >= bounds.Max.X {
+					continue
+				}
+				for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+					dst.Set(px, y, green)
+				}
 			}
 		}
 	}
@@ -797,7 +995,6 @@ func parseYMax(text string) float64 {
 	return v
 }
 
-
 // calcExposurePixels returns the camera exposure time rounded to the nearest
 // integer number of pixels, or 0 if the exposure is zero or parameters are
 // unavailable.
@@ -823,29 +1020,6 @@ func findEdgesForOffset(w fyne.Window, appDir string, offset int) []int {
 	}
 	return edges
 }
-
-// plotRowLightCurve extracts intensity values from the center+offset row of
-// targetImage16bit.png and plots them with the provided edge markers as a
-// light curve in the given panel.
-func plotRowLightCurve(w fyne.Window, panel *fyne.Container, appDir string, offset int, edges []int, yMax, kmPerPixel float64, exposurePixels int) {
-	targetPath := filepath.Join(appDir, "targetImage16bitRotated.png")
-	values, err := report.ExtractRow(targetPath, offset)
-	if err != nil {
-		dialog.ShowError(fmt.Errorf("cannot extract light curve: %w", err), w)
-		return
-	}
-	var integrated []float64
-	if exposurePixels > 1 {
-		integrated = report.ApplyExposure(values, exposurePixels)
-	}
-	plotImg := report.PlotLightCurve(values, 1200, 400, edges, yMax, kmPerPixel, integrated)
-	img := canvas.NewImageFromImage(plotImg)
-	img.FillMode = canvas.ImageFillContain
-	panel.Layout = layout.NewStackLayout()
-	panel.Objects = []fyne.CanvasObject{img}
-	panel.Refresh()
-}
-
 
 // showResultsWindow opens a new window displaying lightCurvePlot.png and
 // diffractionImageWithPath.png side by side, with the plot scaled to match

@@ -2,7 +2,10 @@
   window_size_pixels : 600,
   fundamental_plane_width_km : 40,                      // Required. Size of the FOV in Km
   fundamental_plane_width_num_points : 2000,  // Required, but overridden if an external image is supplied
-  // parallax_arcsec : 3.7711,
+  
+  title : "(9203) Myrtus 2025 Feb 22",        // Optional
+
+  // parallax_arcsec : 3.7711,
   distance_au : 2.33,
   path_to_qe_table_file : "CAMERA-QE\\qhy174QE_every_20nm.qe",  // Optional.
   observation_wavelength_nm : 500,  // Required to be present, even if a QE table is provided.
@@ -12,8 +15,13 @@
 
  
   // percent_mag_drop : 100, 
-  // star_diam_on_plane_mas: 1.0,  // Optional. If omitted, 0.0 is used (i.e., no finite star calculation)
-  // limb_darkening_coeff: 0.7,
+  star_diam_on_plane_mas: 1.0,  // Optional. If omitted, 0.0 is used (i.e., no finite star calculation)
+  star2_diam_on_plane_mas: 1.0,
+  star_separation_mas: 1.5,
+  star_angle_degrees_ccw: 0,
+  star2_brightness_fraction: 0.3,
+  limb_darkening_coeff: 0.7,
+  limb_darkening_coeff2: 0.2,
   // star_class : "K",
 
   Xmain_body : {          // Adding the X to main_body hides this section conveniently

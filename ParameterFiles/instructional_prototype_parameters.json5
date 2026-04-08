@@ -1,0 +1,101 @@
+
+{
+
+  window_size_pixels : 800,     // sets size of main diffraction image plot (if being shown)
+  title : "(92590) 2000 PT13",  // Optional - adds a title to the ground plane image
+
+  fundamental_plane_width_km : 40,            // Required. Size of the FOV in Km
+  fundamental_plane_width_num_points : 1000,  // Required. Number of points across image.
+
+  // Distance to the asteroid can be specified either in au or in arcsec.
+  // If both are present, parallax_arcsec is used.
+  // At least one must be present.
+
+  parallax_arcsec : 3.7711,
+  // distance_au : 2.33,
+  //distance_au : 1.665,
+
+  // If you want an integrated (white light) ground shadow image, supply a path to a QE table file.
+  // Use the example QHY174 sensor response curve file as a template. When present,
+  // a ground shadow image will be generated for each entry in the table.
+  // Each image will be weighted by the QE value at that wavelength for summing with the other images.
+
+  path_to_qe_table_file : "CAMERA-QE\\qhy174QE_every_20nm.qe",  // Optional. See note below if you need to include folder paths
+
+  // If your path contains back slashes, you must escape them with another back slash. See example below ...
+  // Example: path_to_qe_table_file : "c:\\Users\\boban\\Dropbox\\GolandProjects\\OccultDiffraction\\qhy174QEevery20nm",
+
+  // If no QE table is provided, the ground image will be generated for the wavelength
+  // specified below. This parameter is ignored if a QE table is provided.
+
+  observation_wavelength_nm : 500,  // Required to be present, even if a QE table is provided.
+
+  // The next 3 values determine shadow speed and fundamental plane PA (not relevant
+  // for Occult usage except for cross checking comparison during development). They are used
+  // to extract a sample light curve from the diffraction shadow.
+
+  // dX_km_per_sec : 5.074,    // Optional
+  // dY_km_per_sec : -0.904,   // Optional
+  // path_perpendicular_offset_from_center_km : -1.18,  // Optional. Defaults to 0.0 See note below for details
+
+  dX_km_per_sec : 5,    // Optional
+  dY_km_per_sec : 0,    // Optional
+  path_perpendicular_offset_from_center_km : -0.68,  // Optional. Defaults to 0.0 See note below for details
+
+
+  // The path_perpendicular_offset_from_center_km parameter is interpreted such that
+  // positive values shift the observation path to the right of someone facing forward on the star path.
+
+  percent_mag_drop : 100,  // Optional. If omitted, 100 will be used
+
+  // star_diam_on_plane_mas: 0.5,  // Optional. If omitted, 0.0 is used (i.e., no finite star calculation)
+  // star2_diam_on_plane_mas: 0.2,
+  // star_separation_mas: 0.45,
+  // star_angle_degrees_ccw: 0,
+  // star2_brightness_fraction: 0.5,
+
+  // The following parameters control limb-darkening for the star.
+  // Either the star class or a limb-darkening coefficient can be specified.
+  // If both are supplied, the limb_darkening_coeff is used.
+  // If omitted completely, no limb-darkening is applied.
+
+  limb_darkening_coeff: 0.2,  // Optional - defaults to 0.7
+  limb_darkening_coeff2: 0.7, // If a second star is defined, set this as the default is 0.0
+  
+  // This section can be omitted if an external image is supplied.
+  // If included when an external image is supplied, the ellipse shape
+  // will be added (overlaid) on top of the external image.
+  // A trick to suppress a section without comments is to add a character like X to the name.
+
+  main_body : {                 // Required if no external image is supplied
+       x_center_km : 5.8,
+       y_center_km : 0.68,
+       major_axis_km : 2.0,
+       minor_axis_km : 2.0,
+       major_axis_pa_degrees : 98.3,
+  },
+
+  satellite : {                 // Optional
+      x_center_km : 10.8,
+      y_center_km : 0.68,
+      major_axis_km : 0.5,
+      minor_axis_km : 0.5,
+      major_axis_pa_degrees : 94.0,
+  },
+
+  // Set path_to_external_image. This field should be omitted if no external image is supplied.
+  // External images must be square. The image will be placed at the center of the sky image
+  // if it fits. If it is bigger, its width will replace fundamental_plane_width_num_points
+  // Any ellipses defined will be added on top of the external image.
+  // Most commonly the ellipses are left empty.
+  // The external image file format can be 8 bit grayscale png with
+  // asteroid pixels set to 0 and all background pixels set to 255. 
+  // If the external image is an RGB type (like from Paint), it is converted to the gray 8
+  // and the external image pixel at (0,0)is read and used as skyRef. 
+  // This is used to set the gray 8 image to 0 everywhere
+  // this value is found in the external image and to 255 everywhere else. The scheme is
+  // simply "if it's not 'sky', it is 'asteroid'".
+
+  path_to_external_image : "11293_2.png",  // This is a colored Damit shape demo
+
+}

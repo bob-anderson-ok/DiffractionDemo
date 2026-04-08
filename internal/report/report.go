@@ -154,7 +154,7 @@ func json5ToJSON(json5Text string) string {
 	for i < len(src) {
 		ch := src[i]
 
-		// Pass through string literals unchanged (normalise to double quotes).
+		// Pass through string literals unchanged (normalize to double quotes).
 		if ch == '"' || ch == '\'' {
 			quote := ch
 			out.WriteByte('"')
@@ -301,6 +301,90 @@ func ApplyExposure(values []float64, windowSize int) []float64 {
 		result[i] = sum / float64(windowSize)
 	}
 	return result
+}
+
+// CurveData holds all data needed to plot a single observation-path light curve.
+type CurveData struct {
+	Values          []float64  // raw intensity values
+	Integrated      []float64  // exposure-integrated values (maybe nil)
+	Edges           []int      // geometric shadow edge positions
+	CurveColor      color.RGBA // color for the raw curve
+	IntegratedColor color.RGBA // color for the integrated curve
+}
+
+// PlotLightCurves renders one or more light curves overlaid on a single plot.
+// Each CurveData entry produces a raw line and optional integrated line.
+// Edge markers are drawn in red for each curve.
+func PlotLightCurves(curves []CurveData, width, height int, yMax, kmPerPixel float64) *image.RGBA {
+	p := plot.New()
+	p.Title.Text = "Light Curve"
+	if kmPerPixel > 0 {
+		p.X.Label.Text = "Distance (km)"
+	} else {
+		p.X.Label.Text = "Pixel"
+		kmPerPixel = 1
+	}
+	p.Y.Label.Text = "Intensity"
+	p.Y.Min = -0.1
+	p.Y.Max = yMax
+	p.Y.Tick.Marker = fixedIntervalTicker{Interval: 0.1, Min: p.Y.Min, Max: p.Y.Max}
+	p.Add(plotter.NewGrid())
+
+	for _, cd := range curves {
+		if len(cd.Values) >= 2 {
+			pts := make(plotter.XYs, len(cd.Values))
+			for i, v := range cd.Values {
+				pts[i].X = float64(i) * kmPerPixel
+				pts[i].Y = v
+			}
+			line, _ := plotter.NewLine(pts)
+			line.Color = cd.CurveColor
+			p.Add(line)
+		}
+
+		if len(cd.Integrated) >= 2 {
+			iPts := make(plotter.XYs, len(cd.Integrated))
+			for i, v := range cd.Integrated {
+				iPts[i].X = float64(i) * kmPerPixel
+				iPts[i].Y = v
+			}
+			iLine, _ := plotter.NewLine(iPts)
+			iLine.Color = cd.IntegratedColor
+			iLine.Width = vg.Points(1.5)
+			p.Add(iLine)
+		}
+
+		// Draw edge markers using whichever data length is available.
+		dataLen := len(cd.Values)
+		if len(cd.Integrated) > dataLen {
+			dataLen = len(cd.Integrated)
+		}
+		for _, ei := range cd.Edges {
+			if ei < 0 || ei >= dataLen {
+				continue
+			}
+			edgeLine, _ := plotter.NewLine(plotter.XYs{
+				{X: float64(ei) * kmPerPixel, Y: 0},
+				{X: float64(ei) * kmPerPixel, Y: p.Y.Max},
+			})
+			edgeLine.Color = color.RGBA{R: 255, A: 255}
+			edgeLine.Width = vg.Points(1.5)
+			p.Add(edgeLine)
+		}
+	}
+
+	c := vgimg.New(vg.Length(width), vg.Length(height))
+	p.Draw(vgdraw.New(c))
+
+	src := c.Image()
+	bounds := src.Bounds()
+	dst := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			dst.Set(x, y, src.At(x, y))
+		}
+	}
+	return dst
 }
 
 // PlotLightCurve renders a line plot of the given intensity values using
