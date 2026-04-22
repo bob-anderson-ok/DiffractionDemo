@@ -40,6 +40,41 @@ func RotateGrayBilinear(src *image.Gray, angleRad float64, bg uint8) *image.Gray
 	return dst
 }
 
+// RotateTranslateGrayBilinear rotates src by angleRad CCW after first shifting
+// its content by (txSrc, tySrc) pixels in the source (pre-rotation) frame.
+// Pixels outside the source image are filled with bg.
+func RotateTranslateGrayBilinear(src *image.Gray, angleRad, txSrc, tySrc float64, bg uint8) *image.Gray {
+	sb := src.Bounds()
+	sw, sh := sb.Dx(), sb.Dy()
+
+	dw, dh := rotatedBounds(sw, sh, angleRad)
+	dst := image.NewGray(image.Rect(0, 0, dw, dh))
+
+	srcCx := float64(sw-1) / 2.0
+	srcCy := float64(sh-1) / 2.0
+	dstCx := float64(dw-1) / 2.0
+	dstCy := float64(dh-1) / 2.0
+
+	sinA := math.Sin(angleRad)
+	cosA := math.Cos(angleRad)
+
+	for y := 0; y < dh; y++ {
+		for x := 0; x < dw; x++ {
+			fx := float64(x) - dstCx
+			fy := float64(y) - dstCy
+
+			// Inverse rotation back to the translated-source frame, then
+			// undo the source-frame translation to reach the original source.
+			sx := cosA*fx + sinA*fy + srcCx - txSrc
+			sy := -sinA*fx + cosA*fy + srcCy - tySrc
+
+			dst.Pix[y*dst.Stride+x] = sampleGrayBilinear(src, sx, sy, bg)
+		}
+	}
+
+	return dst
+}
+
 // RotateGray16Bilinear rotates a 16-bit grayscale image by angleRad counterclockwise.
 // The destination is expanded so the entire rotated image fits.
 // Pixels outside the source image are filled with bg.

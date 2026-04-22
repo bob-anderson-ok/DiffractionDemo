@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
@@ -91,8 +92,40 @@ func Run() {
 	var edges1Check, edges2Check *widget.Check
 	var darkModeCheck *widget.Check
 
+	starDiam1Label := widget.NewLabel("")
+	starDiam2Label := widget.NewLabel("")
+	starSepLabel := widget.NewLabel("")
+	starAngleLabel := widget.NewLabel("")
+	updateStarDiameterLabels := func() {
+		d1, d2, err := report.ProjectedStarDiametersKm(paramsEntry.Text)
+		if err != nil {
+			starDiam1Label.SetText("")
+			starDiam2Label.SetText("")
+		} else {
+			if d1 > 0 {
+				starDiam1Label.SetText(fmt.Sprintf("Star 1 proj. diameter: %.4f km", d1))
+			} else {
+				starDiam1Label.SetText("")
+			}
+			if d2 > 0 {
+				starDiam2Label.SetText(fmt.Sprintf("Star 2 proj. diameter: %.4f km", d2))
+			} else {
+				starDiam2Label.SetText("")
+			}
+		}
+		sepKm, angleDeg, hasSep, sepErr := report.StarSeparation(paramsEntry.Text)
+		if hasSep && sepErr == nil {
+			starSepLabel.SetText(fmt.Sprintf("Star separation: %.4f km", sepKm))
+			starAngleLabel.SetText(fmt.Sprintf("Position angle: %.2f° CCW from N", angleDeg))
+		} else {
+			starSepLabel.SetText("")
+			starAngleLabel.SetText("")
+		}
+	}
+
 	paramsEntry.OnChanged = func(_ string) {
 		paramsDirty = true
+		updateStarDiameterLabels()
 	}
 
 	saveFileBtn := widget.NewButton("Save", func() {
@@ -438,6 +471,8 @@ func Run() {
 
 		// Rotate geometricShadow.png with bg=255.
 		geoPath := filepath.Join(appDir, "geometricShadow.png")
+		star1Out := filepath.Join(appDir, "geometricShadowRotated_star1.png")
+		star2Out := filepath.Join(appDir, "geometricShadowRotated_star2.png")
 		if gf, err := os.Open(geoPath); err != nil {
 			dialog.ShowError(fmt.Errorf("cannot open geometricShadow.png: %w", err), w)
 		} else {
@@ -458,6 +493,38 @@ func Run() {
 						dialog.ShowError(fmt.Errorf("cannot write geometricShadowRotated.png: %w", err), w)
 					}
 					out.Close()
+				}
+
+				// Write per-star offset shadows when two stars are present,
+				// otherwise remove any stale copies from a prior run.
+				sepKm, angleDeg, hasSep, sepErr := report.StarSeparation(paramsEntry.Text)
+				scale := kmPerPixel()
+				if sepErr == nil && hasSep && scale > 0 {
+					sepPx := sepKm / scale
+					theta := angleDeg * math.Pi / 180.0
+					// Angle is CCW from N (image-up). In pixel coords +Y is
+					// down, so the star-2 offset direction from star 1 is
+					// (-sin θ, -cos θ) × sepPx. Each star's shadow is placed
+					// at ±halfOffset relative to the image center.
+					hx := -0.5 * math.Sin(theta) * sepPx
+					hy := -0.5 * math.Cos(theta) * sepPx
+					writeOffsetShadow := func(path string, tx, ty float64) {
+						rot := report.RotateTranslateGrayBilinear(geoGray, rotAngleRadians, tx, ty, 255)
+						out, err := os.Create(path)
+						if err != nil {
+							dialog.ShowError(fmt.Errorf("cannot create %s: %w", filepath.Base(path), err), w)
+							return
+						}
+						defer out.Close()
+						if err := png.Encode(out, rot); err != nil {
+							dialog.ShowError(fmt.Errorf("cannot write %s: %w", filepath.Base(path), err), w)
+						}
+					}
+					writeOffsetShadow(star1Out, -hx, -hy)
+					writeOffsetShadow(star2Out, hx, hy)
+				} else {
+					os.Remove(star1Out)
+					os.Remove(star2Out)
 				}
 			}
 		}
@@ -570,6 +637,8 @@ func Run() {
 		container.NewHBox(view2Check, edges2Check), pathOffset2Box, exposure2Box,
 		widget.NewSeparator(),
 		darkModeCheck,
+		starDiam1Label, starDiam2Label,
+		starSepLabel, starAngleLabel,
 	)
 	lightCurveLeftPanel := container.NewStack(leftPanelBg, lightCurveLeftContent)
 	lightCurveWithControls := container.NewBorder(nil, nil, lightCurveLeftPanel, nil, lightCurvePanel)
@@ -1011,8 +1080,25 @@ func calcExposurePixels(paramsText, exposureText string, kmPerPx float64) int {
 }
 
 // findEdgesForOffset returns the geometric shadow edge positions for the
-// given path offset, or nil if the shadow image cannot be read.
+// given path offset, or nil if the shadow image cannot be read. When the
+// per-star offset shadows exist (double-star case), it returns the combined
+// edges from both.
 func findEdgesForOffset(w fyne.Window, appDir string, offset int) []int {
+	star1Path := filepath.Join(appDir, "geometricShadowRotated_star1.png")
+	star2Path := filepath.Join(appDir, "geometricShadowRotated_star2.png")
+	_, err1 := os.Stat(star1Path)
+	_, err2 := os.Stat(star2Path)
+	if err1 == nil && err2 == nil {
+		e1, e1Err := report.FindEdges(star1Path, offset)
+		if e1Err != nil {
+			dialog.ShowError(fmt.Errorf("cannot find edges (star 1): %w", e1Err), w)
+		}
+		e2, e2Err := report.FindEdges(star2Path, offset)
+		if e2Err != nil {
+			dialog.ShowError(fmt.Errorf("cannot find edges (star 2): %w", e2Err), w)
+		}
+		return append(e1, e2...)
+	}
 	shadowPath := filepath.Join(appDir, "geometricShadowRotated.png")
 	edges, err := report.FindEdges(shadowPath, offset)
 	if err != nil {

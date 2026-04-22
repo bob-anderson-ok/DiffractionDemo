@@ -95,6 +95,68 @@ func ParseShadowSpeed(json5Text string) (float64, error) {
 	return math.Sqrt(dx*dx + dy*dy), nil
 }
 
+// ProjectedStarDiametersKm returns the projected diameter in km of star 1 and
+// star 2 at the fundamental plane distance, as derived from the parameters
+// text. A returned value of 0 means the star is absent or a point source
+// (diameter parameter missing or zero). If any star has a non-zero diameter
+// but no distance_au or parallax_arcsec is available, an error is returned.
+func ProjectedStarDiametersKm(json5Text string) (d1Km, d2Km float64, err error) {
+	mas1, mas1Err := extractFloat(json5Text, "star_diam_on_plane_mas")
+	mas2, mas2Err := extractFloat(json5Text, "star2_diam_on_plane_mas")
+	haveStar1 := mas1Err == nil && mas1 > 0
+	haveStar2 := mas2Err == nil && mas2 > 0
+	if !haveStar1 && !haveStar2 {
+		return 0, 0, nil
+	}
+	distanceKm, err := parseDistanceKm(json5Text)
+	if err != nil {
+		return 0, 0, err
+	}
+	// 1 mas = (π / 648_000_000) rad; projected size = distance × angle.
+	const masToRad = math.Pi / 648_000_000.0
+	if haveStar1 {
+		d1Km = distanceKm * mas1 * masToRad
+	}
+	if haveStar2 {
+		d2Km = distanceKm * mas2 * masToRad
+	}
+	return d1Km, d2Km, nil
+}
+
+// StarSeparation returns the projected separation (in km) and position
+// angle (in degrees CCW from North) of the two stars. ok is false when
+// star_separation_mas is absent.
+func StarSeparation(json5Text string) (sepKm, angleDeg float64, ok bool, err error) {
+	mas, masErr := extractFloat(json5Text, "star_separation_mas")
+	if masErr != nil {
+		return 0, 0, false, nil
+	}
+	distanceKm, err := parseDistanceKm(json5Text)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	const masToRad = math.Pi / 648_000_000.0
+	sepKm = distanceKm * mas * masToRad
+	angleDeg, _ = extractFloat(json5Text, "star_angle_degrees_ccw")
+	return sepKm, angleDeg, true, nil
+}
+
+// parseDistanceKm returns the asteroid distance in km from the parameters
+// text, using parallax_arcsec if present, otherwise distance_au. The
+// parallax form is the equatorial horizontal parallax of the asteroid.
+func parseDistanceKm(json5Text string) (float64, error) {
+	const auKm = 149_597_870.7
+	const earthRadiusKm = 6378.14
+	const arcsecPerRadian = 648_000.0 / math.Pi
+	if parallax, err := extractFloat(json5Text, "parallax_arcsec"); err == nil && parallax > 0 {
+		return earthRadiusKm * arcsecPerRadian / parallax, nil
+	}
+	if au, err := extractFloat(json5Text, "distance_au"); err == nil && au > 0 {
+		return au * auKm, nil
+	}
+	return 0, fmt.Errorf("no distance_au or parallax_arcsec in parameters")
+}
+
 // PathAngleFromVelocity computes the observation path angle in degrees
 // measured counter-clockwise from the positive Y-axis, given the shadow
 // velocity components dxKmPerSec and dyKmPerSec. The result is in [0, 359.99....].
