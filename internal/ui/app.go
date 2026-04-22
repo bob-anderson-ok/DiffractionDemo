@@ -91,6 +91,8 @@ func Run() {
 	var view1Check, view2Check *widget.Check
 	var edges1Check, edges2Check *widget.Check
 	var darkModeCheck *widget.Check
+	var geomEdgesCheck *widget.Check
+	var thicknessEntry *focusLostEntry
 
 	starDiam1Label := widget.NewLabel("")
 	starDiam2Label := widget.NewLabel("")
@@ -219,7 +221,9 @@ func Run() {
 			displayImage(w, imagePanel, filepath.Join(appDir, "diffractionImage8bitRotated.png"))
 			return
 		}
-		drawPathLines(w, imagePanel, diffImagePath, paths)
+		drawPerimeter := geomEdgesCheck != nil && geomEdgesCheck.Checked
+		thickness, _ := strconv.Atoi(thicknessEntry.Text)
+		drawPathLines(w, imagePanel, diffImagePath, paths, drawPerimeter, thickness)
 	}
 
 	// refreshPlot redraws the light curve panel based on which View
@@ -620,6 +624,44 @@ func Run() {
 		})
 	}
 	leftPanelBg := canvas.NewRectangle(color.Transparent)
+	geomEdgesCheck = widget.NewCheck("Shadow perimeter", func(_ bool) { refreshImage() })
+
+	// makeIntSpinner builds a labeled `- [entry] +` integer spinner that calls
+	// onChange whenever the value is stepped or the entry loses focus.
+	makeIntSpinner := func(label string, initial, minVal int, onChange func()) (*focusLostEntry, fyne.CanvasObject) {
+		e := newFocusLostEntry()
+		e.SetText(strconv.Itoa(initial))
+		e.OnChanged = func(text string) {
+			if text == "" {
+				return
+			}
+			if _, err := strconv.Atoi(text); err != nil {
+				e.SetText(text[:len(text)-1])
+			}
+		}
+		e.OnFocusLost = func() {
+			v, err := strconv.Atoi(e.Text)
+			if err != nil || v < minVal {
+				e.SetText(strconv.Itoa(minVal))
+			}
+			onChange()
+		}
+		step := func(delta int) {
+			v, _ := strconv.Atoi(e.Text)
+			v += delta
+			if v < minVal {
+				v = minVal
+			}
+			e.SetText(strconv.Itoa(v))
+			onChange()
+		}
+		dec := widget.NewButton("-", func() { step(-1) })
+		inc := widget.NewButton("+", func() { step(1) })
+		box := container.NewGridWrap(fyne.NewSize(entryMinSize.Width*2, entryMinSize.Height), e)
+		return e, container.NewHBox(widget.NewLabel(label), dec, box, inc)
+	}
+	var thicknessSpinner fyne.CanvasObject
+	thicknessEntry, thicknessSpinner = makeIntSpinner("Thickness:", 1, 1, refreshImage)
 	darkModeCheck = widget.NewCheck("Dark mode", func(checked bool) {
 		if checked {
 			leftPanelBg.FillColor = color.RGBA{R: 30, G: 30, B: 30, A: 255}
@@ -636,7 +678,7 @@ func Run() {
 		container.NewHBox(view1Check, edges1Check), pathOffsetBox, exposureBox, widget.NewSeparator(),
 		container.NewHBox(view2Check, edges2Check), pathOffset2Box, exposure2Box,
 		widget.NewSeparator(),
-		darkModeCheck,
+		container.NewHBox(darkModeCheck, geomEdgesCheck, thicknessSpinner),
 		starDiam1Label, starDiam2Label,
 		starSepLabel, starAngleLabel,
 	)
@@ -992,8 +1034,12 @@ type pathOverlay struct {
 
 // drawPathLines loads the rotated diffraction image, draws horizontal path
 // lines and vertical edge markers for each overlay, and displays the result.
-func drawPathLines(w fyne.Window, panel *fyne.Container, imagePath string, paths []pathOverlay) {
-	rotatedPath := filepath.Join(filepath.Dir(imagePath), "diffractionImage8bitRotated.png")
+// When drawShadowPerimeter is true, the perimeter of the geometric shadow
+// (or both per-star shadows when present) is traced in solid red at the
+// supplied line thickness.
+func drawPathLines(w fyne.Window, panel *fyne.Container, imagePath string, paths []pathOverlay, drawShadowPerimeter bool, thickness int) {
+	appDir := filepath.Dir(imagePath)
+	rotatedPath := filepath.Join(appDir, "diffractionImage8bitRotated.png")
 	f, err := os.Open(rotatedPath)
 	if err != nil {
 		dialog.ShowError(fmt.Errorf("cannot open rotated image: %w", err), w)
@@ -1011,6 +1057,7 @@ func drawPathLines(w fyne.Window, panel *fyne.Container, imagePath string, paths
 	draw.Draw(dst, bounds, src, bounds.Min, draw.Src)
 
 	green := color.RGBA{G: 255, A: 255}
+	red := color.RGBA{R: 255, A: 255}
 	for _, po := range paths {
 		// Draw observation path as a 4-pixel horizontal line.
 		lineY := bounds.Min.Y + bounds.Dy()/2 + po.offset
@@ -1038,11 +1085,73 @@ func drawPathLines(w fyne.Window, panel *fyne.Container, imagePath string, paths
 		}
 	}
 
+	if drawShadowPerimeter {
+		star1Path := filepath.Join(appDir, "geometricShadowRotated_star1.png")
+		star2Path := filepath.Join(appDir, "geometricShadowRotated_star2.png")
+		_, err1 := os.Stat(star1Path)
+		_, err2 := os.Stat(star2Path)
+		if err1 == nil && err2 == nil {
+			overlayShadowPerimeter(dst, star1Path, red, thickness)
+			overlayShadowPerimeter(dst, star2Path, red, thickness)
+		} else {
+			overlayShadowPerimeter(dst, filepath.Join(appDir, "geometricShadowRotated.png"), red, thickness)
+		}
+	}
+
 	img := canvas.NewImageFromImage(dst)
 	img.FillMode = canvas.ImageFillContain
 	panel.Layout = layout.NewStackLayout()
 	panel.Objects = []fyne.CanvasObject{img}
 	panel.Refresh()
+}
+
+// overlayShadowPerimeter reads a binary geometric-shadow PNG and paints a
+// solid-color outline of the shadow region onto dst. A perimeter pixel is
+// any shadow (dark) pixel that has at least one 4-neighbor outside the
+// shadow; thickness controls how many pixels wide the outline is drawn.
+func overlayShadowPerimeter(dst *image.RGBA, imagePath string, c color.RGBA, thickness int) {
+	if thickness < 1 {
+		thickness = 1
+	}
+	f, err := os.Open(imagePath)
+	if err != nil {
+		return
+	}
+	src, _, decErr := image.Decode(f)
+	f.Close()
+	if decErr != nil {
+		return
+	}
+	sb := src.Bounds()
+	db := dst.Bounds()
+	isShadow := func(x, y int) bool {
+		if x < sb.Min.X || x >= sb.Max.X || y < sb.Min.Y || y >= sb.Max.Y {
+			return false
+		}
+		r, _, _, _ := src.At(x, y).RGBA()
+		return r < 0x7FFF
+	}
+	startOff := -(thickness / 2)
+	endOff := (thickness - 1) / 2
+	for y := sb.Min.Y; y < sb.Max.Y; y++ {
+		for x := sb.Min.X; x < sb.Max.X; x++ {
+			if !isShadow(x, y) {
+				continue
+			}
+			if isShadow(x-1, y) && isShadow(x+1, y) && isShadow(x, y-1) && isShadow(x, y+1) {
+				continue
+			}
+			for dy := startOff; dy <= endOff; dy++ {
+				for dx := startOff; dx <= endOff; dx++ {
+					px, py := x+dx, y+dy
+					if px < db.Min.X || px >= db.Max.X || py < db.Min.Y || py >= db.Max.Y {
+						continue
+					}
+					dst.Set(px, py, c)
+				}
+			}
+		}
+	}
 }
 
 // parsePathOffset parses the path offset entry text as an integer,
